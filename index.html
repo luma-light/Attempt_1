@@ -242,7 +242,7 @@
                 } else if (mode === 'box') {
                     socket.emit('spawnBox', { x: mouseX, y: mouseY });
                 } else if (mode === 'explode') {
-                    socket.emit('explode', { x: mouseX, y: mouseY, radius: 100, power: 0.05 });
+                    socket.emit('explode', { x: mouseX, y: mouseY, radius: 100, power: 5 });  // Changed from 0.05
                 }
             }
         }
