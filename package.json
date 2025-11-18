@@ -1,0 +1,25 @@
+{
+  "name": "p5-matter-physics",
+  "version": "1.0.0",
+  "description": "Matter.js physics on server + p5.js rendering on client",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "keywords": [
+    "p5.js",
+    "matter.js",
+    "socket.io",
+    "physics",
+    "server-authoritative",
+    "realtime",
+    "multiplayer"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.15.3",
+    "matter-js": "^0.19.0",
+    "socket.io": "^2.0.3"
+  }
+}

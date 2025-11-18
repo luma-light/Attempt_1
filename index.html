@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>p5.js + Matter.js Physics Server</title>
+    <meta charset="utf-8">
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: #1a1a1a;
+            font-family: Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+        }
+        #controls {
+            background: rgba(255, 255, 255, 0.95);
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 15px;
+            text-align: center;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+            max-width: 800px;
+        }
+        h2 {
+            margin: 0 0 15px 0;
+            color: #333;
+        }
+        .button-row {
+            margin: 10px 0;
+        }
+        button {
+            padding: 12px 24px;
+            margin: 0 5px;
+            font-size: 14px;
+            cursor: pointer;
+            border: none;
+            border-radius: 6px;
+            background: #2196F3;
+            color: white;
+            transition: all 0.3s;
+            font-weight: bold;
+        }
+        button:hover {
+            background: #0b7dda;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+        }
+        button.circle {
+            background: #4CAF50;
+        }
+        button.circle:hover {
+            background: #45a049;
+        }
+        button.box {
+            background: #FF9800;
+        }
+        button.box:hover {
+            background: #e68900;
+        }
+        button.explode {
+            background: #f44336;
+        }
+        button.explode:hover {
+            background: #da190b;
+        }
+        button.clear {
+            background: #9E9E9E;
+        }
+        button.clear:hover {
+            background: #757575;
+        }
+        #info {
+            color: #666;
+            font-size: 12px;
+            margin-top: 10px;
+            line-height: 1.6;
+        }
+        .mode {
+            display: inline-block;
+            padding: 4px 10px;
+            margin: 5px;
+            background: #e3f2fd;
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 11px;
+        }
+        canvas {
+            border: 3px solid #333;
+            box-shadow: 0 6px 30px rgba(0,0,0,0.6);
+            cursor: crosshair;
+        }
+    </style>
+</head>
+<body>
+    <div id="controls">
+        <h2>🎮 p5.js + Matter.js Physics Server</h2>
+
+        <div class="button-row">
+            <button id="circleBtn" class="circle">🔵 Circle Mode</button>
+            <button id="boxBtn" class="box">🟧 Box Mode</button>
+            <button id="explodeBtn" class="explode">💥 Explode Mode</button>
+        </div>
+
+        <div class="button-row">
+            <button id="clearBtn" class="clear">🗑️ Clear All</button>
+        </div>
+
+        <div id="info">
+            <strong>Current Mode:</strong> <span class="mode" id="currentMode">Circle</span><br>
+            <strong>Instructions:</strong> Click canvas to spawn objects or create explosions<br>
+            Matter.js physics runs on server @ 60 FPS | p5.js renders on client @ 60 FPS | Network @ 20 Hz<br>
+            Open in multiple tabs to see synchronized physics!
+        </div>
+    </div>
+
+    <!-- Load p5.js from CDN -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.4.0/p5.min.js"></script>
+
+    <!-- Load Socket.IO client from CDN -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/2.0.3/socket.io.js"></script>
+
+    <!-- p5.js sketch -->
+    <script>
+        // Connect to Socket.IO server
+        var socket = io();
+
+        // World dimensions
+        let worldWidth = 800;
+        let worldHeight = 600;
+
+        // Client-side body storage (rendering only)
+        let bodies = {};
+
+        // Interaction mode
+        let mode = 'circle'; // 'circle', 'box', or 'explode'
+
+        function setup() {
+            createCanvas(worldWidth, worldHeight);
+            frameRate(60);
+
+            // Receive initial world state
+            socket.on('worldState', (data) => {
+                worldWidth = data.width;
+                worldHeight = data.height;
+                bodies = {};
+                data.bodies.forEach(bodyData => {
+                    bodies[bodyData.id] = bodyData;
+                });
+                console.log('World state received:', data);
+            });
+
+            // Receive physics updates from server
+            socket.on('physicsUpdate', (bodiesData) => {
+                bodies = {};
+                bodiesData.forEach(bodyData => {
+                    bodies[bodyData.id] = bodyData;
+                });
+            });
+
+            // Receive notification of new body
+            socket.on('bodySpawned', (bodyData) => {
+                bodies[bodyData.id] = bodyData;
+                console.log('Body spawned:', bodyData);
+            });
+
+            // Receive notification that all bodies were cleared
+            socket.on('bodiesCleared', () => {
+                bodies = {};
+                console.log('All bodies cleared');
+            });
+        }
+
+        function draw() {
+            // Background
+            background(20, 25, 40);
+
+            // Draw subtle grid
+            stroke(40, 45, 60);
+            strokeWeight(1);
+            for (let x = 0; x < width; x += 50) {
+                line(x, 0, x, height);
+            }
+            for (let y = 0; y < height; y += 50) {
+                line(0, y, width, y);
+            }
+
+            // Draw all physics bodies using p5.js
+            push();
+            Object.values(bodies).forEach(body => {
+                push();
+                translate(body.x, body.y);
+                rotate(body.angle);
+
+                // Set color from server
+                fill(body.color);
+                stroke(255, 255, 255, 100);
+                strokeWeight(2);
+
+                // Draw based on type
+                if (body.type === 'circle') {
+                    ellipse(0, 0, body.radius * 2, body.radius * 2);
+                } else if (body.type === 'box') {
+                    rectMode(CENTER);
+                    rect(0, 0, body.width, body.height);
+                }
+
+                pop();
+
+                // Draw velocity vector (optional - shows physics)
+                stroke(255, 255, 0, 150);
+                strokeWeight(2);
+                line(body.x, body.y, body.x + body.vx * 2, body.y + body.vy * 2);
+            });
+            pop();
+
+            // Draw stats
+            noStroke();
+            fill(255, 255, 255, 200);
+            textAlign(LEFT, TOP);
+            textSize(14);
+            text(`Bodies: ${Object.keys(bodies).length}`, 10, 10);
+            text(`FPS: ${Math.round(frameRate())}`, 10, 30);
+            text(`Mode: ${mode}`, 10, 50);
+
+            // Draw explosion preview in explode mode
+            if (mode === 'explode' && mouseX >= 0 && mouseX <= width && mouseY >= 0 && mouseY <= height) {
+                noFill();
+                stroke(255, 100, 100, 100);
+                strokeWeight(3);
+                ellipse(mouseX, mouseY, 200, 200);
+            }
+        }
+
+        // Handle mouse clicks
+        function mousePressed() {
+            if (mouseX >= 0 && mouseX <= width && mouseY >= 0 && mouseY <= height) {
+                if (mode === 'circle') {
+                    socket.emit('spawnCircle', { x: mouseX, y: mouseY });
+                } else if (mode === 'box') {
+                    socket.emit('spawnBox', { x: mouseX, y: mouseY });
+                } else if (mode === 'explode') {
+                    socket.emit('explode', { x: mouseX, y: mouseY, radius: 100, power: 0.05 });
+                }
+            }
+        }
+
+        // Button handlers
+        document.getElementById('circleBtn').addEventListener('click', () => {
+            mode = 'circle';
+            document.getElementById('currentMode').textContent = 'Circle';
+        });
+
+        document.getElementById('boxBtn').addEventListener('click', () => {
+            mode = 'box';
+            document.getElementById('currentMode').textContent = 'Box';
+        });
+
+        document.getElementById('explodeBtn').addEventListener('click', () => {
+            mode = 'explode';
+            document.getElementById('currentMode').textContent = 'Explode';
+        });
+
+        document.getElementById('clearBtn').addEventListener('click', () => {
+            socket.emit('clearBodies');
+        });
+    </script>
+</body>
+</html>
