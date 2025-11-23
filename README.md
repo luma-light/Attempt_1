@@ -1,4 +1,4 @@
-# p5.js + Matter.js Server-Authoritative Physics
+# p5.js + Matter.js Server-Authoritative Physics—AI Generated
 
 A demonstration combining **Matter.js physics engine on the server** with **p5.js rendering on the client**. This gives you production-quality physics simulation with the ease of p5.js drawing syntax!
 
