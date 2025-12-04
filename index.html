@@ -15,6 +15,54 @@
             justify-content: center;
             min-height: 100vh;
         }
+        #joinScreen {
+            background: rgba(255, 255, 255, 0.95);
+            padding: 30px;
+            border-radius: 10px;
+            text-align: center;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+            max-width: 400px;
+        }
+        #joinScreen h2 {
+            margin: 0 0 20px 0;
+            color: #333;
+        }
+        #joinScreen input {
+            width: 100%;
+            padding: 10px;
+            margin: 10px 0;
+            border: 2px solid #ddd;
+            border-radius: 5px;
+            font-size: 14px;
+            box-sizing: border-box;
+        }
+        #joinScreen input:focus {
+            outline: none;
+            border-color: #2196F3;
+        }
+        #joinBtn {
+            width: 100%;
+            padding: 12px;
+            margin-top: 10px;
+            font-size: 16px;
+            font-weight: bold;
+            background: #2196F3;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        #joinBtn:hover {
+            background: #0b7dda;
+        }
+        #errorMessage {
+            color: #f44336;
+            margin-top: 10px;
+            display: none;
+        }
+        #gameContainer {
+            display: none;
+        }
         #controls {
             background: rgba(255, 255, 255, 0.95);
             padding: 20px;
@@ -27,6 +75,22 @@
         h2 {
             margin: 0 0 15px 0;
             color: #333;
+        }
+        #roomInfo {
+            background: #e3f2fd;
+            padding: 10px;
+            border-radius: 5px;
+            margin-bottom: 15px;
+            font-size: 14px;
+        }
+        .player-name {
+            display: inline-block;
+            background: #4CAF50;
+            color: white;
+            padding: 3px 8px;
+            margin: 2px;
+            border-radius: 3px;
+            font-size: 12px;
         }
         .button-row {
             margin: 10px 0;
@@ -95,24 +159,38 @@
     </style>
 </head>
 <body>
-    <div id="controls">
+    <!-- Join Screen (shown first) -->
+    <div id="joinScreen">
         <h2>🎮 p5.js + Matter.js Physics Server</h2>
+        <p>Enter your details to join a room (max 3 players per room)</p>
+        <input type="text" id="usernameInput" placeholder="Your name" maxlength="20" required>
+        <input type="text" id="roomInput" placeholder="Room name" maxlength="20" required>
+        <button id="joinBtn">Join Room</button>
+        <div id="errorMessage"></div>
+    </div>
 
-        <div class="button-row">
-            <button id="circleBtn" class="circle">🔵 Circle Mode</button>
-            <button id="boxBtn" class="box">🟧 Box Mode</button>
-            <button id="explodeBtn" class="explode">💥 Explode Mode</button>
-        </div>
+    <!-- Game Container (shown after joining) -->
+    <div id="gameContainer">
+        <div id="controls">
+            <h2>🎮 p5.js + Matter.js Physics Server</h2>
 
-        <div class="button-row">
-            <button id="clearBtn" class="clear">🗑️ Clear All</button>
-        </div>
+            <div id="roomInfo"></div>
 
-        <div id="info">
-            <strong>Current Mode:</strong> <span class="mode" id="currentMode">Circle</span><br>
-            <strong>Instructions:</strong> Click canvas to spawn objects or create explosions<br>
-            Matter.js physics runs on server @ 60 FPS | p5.js renders on client @ 60 FPS | Network @ 20 Hz<br>
-            Open in multiple tabs to see synchronized physics!
+            <div class="button-row">
+                <button id="circleBtn" class="circle">🔵 Circle Mode</button>
+                <button id="boxBtn" class="box">🟧 Box Mode</button>
+                <button id="explodeBtn" class="explode">💥 Explode Mode</button>
+            </div>
+
+            <div class="button-row">
+                <button id="clearBtn" class="clear">🗑️ Clear All</button>
+            </div>
+
+            <div id="info">
+                <strong>Current Mode:</strong> <span class="mode" id="currentMode">Circle</span><br>
+                <strong>Instructions:</strong> Click canvas to spawn objects or create explosions<br>
+                Matter.js physics runs on server @ 60 FPS | p5.js renders on client @ 60 FPS | Network @ 20 Hz
+            </div>
         </div>
     </div>
 
@@ -137,11 +215,67 @@
         // Interaction mode
         let mode = 'circle'; // 'circle', 'box', or 'explode'
 
+        // Room state
+        let username = '';
+        let roomName = '';
+        let inRoom = false;
+
+        // ====== JOIN ROOM LOGIC ======
+
+        // Handle join button click
+        document.getElementById('joinBtn').addEventListener('click', () => {
+            username = document.getElementById('usernameInput').value.trim();
+            roomName = document.getElementById('roomInput').value.trim();
+
+            if (!username || !roomName) {
+                showError('Please enter both name and room name!');
+                return;
+            }
+
+            // Send join request to server
+            socket.emit('joinRoom', { username, room: roomName });
+        });
+
+        // Handle Enter key in input fields
+        document.getElementById('usernameInput').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') document.getElementById('joinBtn').click();
+        });
+        document.getElementById('roomInput').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') document.getElementById('joinBtn').click();
+        });
+
+        // Handle room full error
+        socket.on('roomFull', (data) => {
+            showError(data.message);
+        });
+
+        // Handle room info updates
+        socket.on('roomInfo', (data) => {
+            const roomInfoDiv = document.getElementById('roomInfo');
+            const playersList = data.players.map(p => `<span class="player-name">${p}</span>`).join(' ');
+            roomInfoDiv.innerHTML = `
+                <strong>Room:</strong> ${data.room} |
+                <strong>Players:</strong> ${data.playerCount}/${data.maxPlayers}<br>
+                ${playersList}
+            `;
+        });
+
+        function showError(message) {
+            const errorDiv = document.getElementById('errorMessage');
+            errorDiv.textContent = message;
+            errorDiv.style.display = 'block';
+            setTimeout(() => {
+                errorDiv.style.display = 'none';
+            }, 3000);
+        }
+
+        // ====== P5.JS SETUP ======
+
         function setup() {
             createCanvas(worldWidth, worldHeight);
             frameRate(60);
 
-            // Receive initial world state
+            // Receive initial world state (triggered after joining room)
             socket.on('worldState', (data) => {
                 worldWidth = data.width;
                 worldHeight = data.height;
@@ -150,6 +284,13 @@
                     bodies[bodyData.id] = bodyData;
                 });
                 console.log('World state received:', data);
+
+                // Switch to game screen
+                if (!inRoom) {
+                    inRoom = true;
+                    document.getElementById('joinScreen').style.display = 'none';
+                    document.getElementById('gameContainer').style.display = 'block';
+                }
             });
 
             // Receive physics updates from server

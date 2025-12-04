@@ -14,6 +14,36 @@ const server = express()
 
 const io = socketIO(server);
 
+// ====== ROOM MANAGEMENT (3 Players Max) ======
+
+const MAX_PLAYERS_PER_ROOM = 3;
+const users = [];
+
+// Helper function: Join user to room
+function userJoin(id, username, room) {
+    const user = { id, username, room };
+    users.push(user);
+    return user;
+}
+
+// Helper function: Get the current user
+function getCurrentUser(id) {
+    return users.find(user => user.id === id);
+}
+
+// Helper function: User leaves room
+function userLeave(id) {
+    const index = users.findIndex(user => user.id === id);
+    if (index !== -1) {
+        return users.splice(index, 1)[0];
+    }
+}
+
+// Helper function: Get all users in a room
+function getRoomUsers(room) {
+    return users.filter(user => user.room === room);
+}
+
 // ====== MATTER.JS PHYSICS ENGINE SETUP ======
 
 const Engine = Matter.Engine;
@@ -21,35 +51,66 @@ const World = Matter.World;
 const Bodies = Matter.Bodies;
 const Body = Matter.Body;
 
-// Create physics engine
-const engine = Engine.create();
-const world = engine.world;
-
-// World settings
+// World settings (shared constants)
 const WORLD_WIDTH = 800;
 const WORLD_HEIGHT = 600;
 
-// Disable gravity initially (we'll add it later)
-engine.world.gravity.y = 1; // Matter.js units (1 = normal Earth gravity)
+// Store physics worlds per room
+const rooms = {}; // { roomName: { engine, world, bodies, nextBodyId } }
 
-// Create static walls
-const wallThickness = 50;
-const walls = [
-    Bodies.rectangle(WORLD_WIDTH / 2, -wallThickness / 2, WORLD_WIDTH, wallThickness, { isStatic: true }), // Top
-    Bodies.rectangle(WORLD_WIDTH / 2, WORLD_HEIGHT + wallThickness / 2, WORLD_WIDTH, wallThickness, { isStatic: true }), // Bottom
-    Bodies.rectangle(-wallThickness / 2, WORLD_HEIGHT / 2, wallThickness, WORLD_HEIGHT, { isStatic: true }), // Left
-    Bodies.rectangle(WORLD_WIDTH + wallThickness / 2, WORLD_HEIGHT / 2, wallThickness, WORLD_HEIGHT, { isStatic: true }) // Right
-];
+// Helper function: Create a new physics world for a room
+function createRoomPhysics(roomName) {
+    // Create physics engine
+    const engine = Engine.create();
+    const world = engine.world;
 
-World.add(world, walls);
+    // Set gravity
+    engine.world.gravity.y = 1; // Matter.js units (1 = normal Earth gravity)
 
-// Track dynamic bodies (circles and boxes)
-let bodies = [];
-let nextBodyId = 0;
+    // Create static walls
+    const wallThickness = 50;
+    const walls = [
+        Bodies.rectangle(WORLD_WIDTH / 2, -wallThickness / 2, WORLD_WIDTH, wallThickness, { isStatic: true }), // Top
+        Bodies.rectangle(WORLD_WIDTH / 2, WORLD_HEIGHT + wallThickness / 2, WORLD_WIDTH, wallThickness, { isStatic: true }), // Bottom
+        Bodies.rectangle(-wallThickness / 2, WORLD_HEIGHT / 2, wallThickness, WORLD_HEIGHT, { isStatic: true }), // Left
+        Bodies.rectangle(WORLD_WIDTH + wallThickness / 2, WORLD_HEIGHT / 2, wallThickness, WORLD_HEIGHT, { isStatic: true }) // Right
+    ];
 
-// ====== HELPER FUNCTIONS ======
+    World.add(world, walls);
 
-function createCircle(x, y) {
+    // Create room object
+    rooms[roomName] = {
+        engine: engine,
+        world: world,
+        bodies: [], // Track dynamic bodies (circles and boxes)
+        nextBodyId: 0
+    };
+
+    console.log(`Physics world created for room: ${roomName}`);
+    return rooms[roomName];
+}
+
+// Helper function: Get room physics (creates if doesn't exist)
+function getRoomPhysics(roomName) {
+    if (!rooms[roomName]) {
+        return createRoomPhysics(roomName);
+    }
+    return rooms[roomName];
+}
+
+// Helper function: Delete room physics when empty
+function deleteRoomPhysics(roomName) {
+    if (rooms[roomName]) {
+        delete rooms[roomName];
+        console.log(`Physics world deleted for room: ${roomName}`);
+    }
+}
+
+// ====== HELPER FUNCTIONS (Room-Specific) ======
+
+function createCircle(roomName, x, y) {
+    const room = getRoomPhysics(roomName);
+
     const radius = 15 + Math.random() * 25; // Random size 15-40
     const circle = Bodies.circle(x, y, radius, {
         restitution: 0.8, // Bounciness
@@ -61,20 +122,22 @@ function createCircle(x, y) {
     });
 
     const bodyData = {
-        id: nextBodyId++,
+        id: room.nextBodyId++,
         matterId: circle.id,
         type: 'circle',
         radius: radius,
         color: circle.render.fillStyle
     };
 
-    World.add(world, circle);
-    bodies.push({ matter: circle, data: bodyData });
+    World.add(room.world, circle);
+    room.bodies.push({ matter: circle, data: bodyData });
 
     return bodyData;
 }
 
-function createBox(x, y) {
+function createBox(roomName, x, y) {
+    const room = getRoomPhysics(roomName);
+
     const size = 20 + Math.random() * 40; // Random size 20-60
     const box = Bodies.rectangle(x, y, size, size, {
         restitution: 0.6,
@@ -86,7 +149,7 @@ function createBox(x, y) {
     });
 
     const bodyData = {
-        id: nextBodyId++,
+        id: room.nextBodyId++,
         matterId: box.id,
         type: 'box',
         width: size,
@@ -94,27 +157,26 @@ function createBox(x, y) {
         color: box.render.fillStyle
     };
 
-    World.add(world, box);
-    bodies.push({ matter: box, data: bodyData });
+    World.add(room.world, box);
+    room.bodies.push({ matter: box, data: bodyData });
 
     return bodyData;
 }
 
-function applyForce(bodyId, forceX, forceY) {
-    const body = bodies.find(b => b.data.id === bodyId);
-    if (body) {
-        Body.applyForce(body.matter, body.matter.position, { x: forceX, y: forceY });
+function clearAllBodies(roomName) {
+    const room = rooms[roomName];
+    if (room) {
+        room.bodies.forEach(b => World.remove(room.world, b.matter));
+        room.bodies = [];
     }
 }
 
-function clearAllBodies() {
-    bodies.forEach(b => World.remove(world, b.matter));
-    bodies = [];
-}
-
 // Serialize physics state for clients
-function getPhysicsState() {
-    return bodies.map(b => {
+function getPhysicsState(roomName) {
+    const room = rooms[roomName];
+    if (!room) return [];
+
+    return room.bodies.map(b => {
         const matter = b.matter;
         return {
             id: b.data.id,
@@ -133,21 +195,27 @@ function getPhysicsState() {
     });
 }
 
-// ====== GAME LOOP ======
+// ====== GAME LOOP (All Rooms) ======
 
 const TICK_RATE = 60; // 60 FPS physics simulation
 const UPDATE_RATE = 20; // Send updates to clients at 20 Hz
 
-// Physics update loop
+// Physics update loop - updates all active room physics
 setInterval(() => {
-    Engine.update(engine, 1000 / TICK_RATE);
+    Object.keys(rooms).forEach(roomName => {
+        const room = rooms[roomName];
+        Engine.update(room.engine, 1000 / TICK_RATE);
+    });
 }, 1000 / TICK_RATE);
 
-// Network update loop
+// Network update loop - sends updates to each room
 setInterval(() => {
-    if (bodies.length > 0) {
-        io.emit('physicsUpdate', getPhysicsState());
-    }
+    Object.keys(rooms).forEach(roomName => {
+        const room = rooms[roomName];
+        if (room.bodies.length > 0) {
+            io.to(roomName).emit('physicsUpdate', getPhysicsState(roomName));
+        }
+    });
 }, 1000 / UPDATE_RATE);
 
 // ====== SOCKET.IO HANDLERS ======
@@ -155,30 +223,74 @@ setInterval(() => {
 io.on('connection', (socket) => {
     console.log(`Client connected: ${socket.id}`);
 
-    // Send initial world state
-    socket.emit('worldState', {
-        width: WORLD_WIDTH,
-        height: WORLD_HEIGHT,
-        bodies: getPhysicsState()
+    // Handle room join request
+    socket.on('joinRoom', ({ username, room }) => {
+        console.log(`User ${username} attempting to join room: ${room}`);
+
+        // Check if room is full
+        if (getRoomUsers(room).length >= MAX_PLAYERS_PER_ROOM) {
+            socket.emit('roomFull', {
+                message: `Room "${room}" is full! Maximum ${MAX_PLAYERS_PER_ROOM} players allowed.`
+            });
+            console.log(`Room ${room} is full. User ${username} rejected.`);
+            return;
+        }
+
+        // Join the user to the room
+        const user = userJoin(socket.id, username, room);
+        socket.join(user.room);
+
+        // Create or get physics world for this room
+        getRoomPhysics(user.room);
+
+        // Send initial world state to the joining player
+        socket.emit('worldState', {
+            width: WORLD_WIDTH,
+            height: WORLD_HEIGHT,
+            bodies: getPhysicsState(user.room)
+        });
+
+        // Notify room about player count
+        const roomUsers = getRoomUsers(user.room);
+        io.to(user.room).emit('roomInfo', {
+            room: user.room,
+            playerCount: roomUsers.length,
+            maxPlayers: MAX_PLAYERS_PER_ROOM,
+            players: roomUsers.map(u => u.username)
+        });
+
+        console.log(`${username} joined room ${room}. Players: ${roomUsers.length}/${MAX_PLAYERS_PER_ROOM}`);
     });
 
     // Spawn circle
     socket.on('spawnCircle', (data) => {
-        const bodyData = createCircle(data.x, data.y);
-        io.emit('bodySpawned', bodyData);
-        console.log(`Circle ${bodyData.id} spawned at (${data.x}, ${data.y})`);
+        const user = getCurrentUser(socket.id);
+        if (!user) return;
+
+        const bodyData = createCircle(user.room, data.x, data.y);
+        io.to(user.room).emit('bodySpawned', bodyData);
+        console.log(`Circle ${bodyData.id} spawned in room ${user.room} at (${data.x}, ${data.y})`);
     });
 
     // Spawn box
     socket.on('spawnBox', (data) => {
-        const bodyData = createBox(data.x, data.y);
-        io.emit('bodySpawned', bodyData);
-        console.log(`Box ${bodyData.id} spawned at (${data.x}, ${data.y})`);
+        const user = getCurrentUser(socket.id);
+        if (!user) return;
+
+        const bodyData = createBox(user.room, data.x, data.y);
+        io.to(user.room).emit('bodySpawned', bodyData);
+        console.log(`Box ${bodyData.id} spawned in room ${user.room} at (${data.x}, ${data.y})`);
     });
 
     // Apply explosion force
     socket.on('explode', (data) => {
-        bodies.forEach(b => {
+        const user = getCurrentUser(socket.id);
+        if (!user) return;
+
+        const room = rooms[user.room];
+        if (!room) return;
+
+        room.bodies.forEach(b => {
             const dx = b.matter.position.x - data.x;
             const dy = b.matter.position.y - data.y;
             const distance = Math.sqrt(dx * dx + dy * dy);
@@ -190,18 +302,40 @@ io.on('connection', (socket) => {
                 Body.applyForce(b.matter, b.matter.position, { x: forceX, y: forceY });
             }
         });
-        console.log(`Explosion at (${data.x}, ${data.y})`);
+        console.log(`Explosion in room ${user.room} at (${data.x}, ${data.y})`);
     });
 
     // Clear all bodies
     socket.on('clearBodies', () => {
-        clearAllBodies();
-        io.emit('bodiesCleared');
-        console.log('All bodies cleared');
+        const user = getCurrentUser(socket.id);
+        if (!user) return;
+
+        clearAllBodies(user.room);
+        io.to(user.room).emit('bodiesCleared');
+        console.log(`All bodies cleared in room ${user.room}`);
     });
 
+    // Handle disconnect
     socket.on('disconnect', () => {
-        console.log(`Client disconnected: ${socket.id}`);
+        const user = userLeave(socket.id);
+
+        if (user) {
+            console.log(`Client disconnected: ${user.username} from room ${user.room}`);
+
+            // Update room info
+            const roomUsers = getRoomUsers(user.room);
+            io.to(user.room).emit('roomInfo', {
+                room: user.room,
+                playerCount: roomUsers.length,
+                maxPlayers: MAX_PLAYERS_PER_ROOM,
+                players: roomUsers.map(u => u.username)
+            });
+
+            // If room is empty, delete the physics world
+            if (roomUsers.length === 0) {
+                deleteRoomPhysics(user.room);
+            }
+        }
     });
 });
 
