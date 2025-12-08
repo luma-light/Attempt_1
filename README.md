@@ -2,8 +2,55 @@
 
 A demonstration combining **Matter.js physics engine on the server** with **p5.js rendering on the client**. This gives you production-quality physics simulation with the ease of p5.js drawing syntax!
 
-<!-- toc -->
-<!-- tocstop -->
+<!-- START doctoc generated TOC please keep comment here to allow auto update -->
+<!-- DON'T EDIT THIS SECTION, INSTEAD RE-RUN doctoc TO UPDATE -->
+**Table of Contents**
+
+- [What it does](#what-it-does)
+- [Why This Combination?](#why-this-combination)
+  - [Benefits:](#benefits)
+- [Running Locally](#running-locally)
+- [Features](#features)
+  - [Matter.js Physics (Server)](#matterjs-physics-server)
+  - [p5.js Rendering (Client)](#p5js-rendering-client)
+- [Architecture](#architecture)
+  - [Server (server.js)](#server-serverjs)
+  - [Client (index.html)](#client-indexhtml)
+- [Matter.js Key Concepts](#matterjs-key-concepts)
+  - [1. Bodies](#1-bodies)
+  - [2. Properties](#2-properties)
+  - [3. Forces](#3-forces)
+  - [4. Velocity](#4-velocity)
+- [Implementation Details](#implementation-details)
+  - [Explosion System](#explosion-system)
+  - [Random Object Properties](#random-object-properties)
+- [Files](#files)
+- [Performance](#performance)
+- [Testing Multiplayer](#testing-multiplayer)
+- [Running in GitHub Codespaces](#running-in-github-codespaces)
+  - [Step 1: Fork the Repository](#step-1-fork-the-repository)
+  - [Step 2: Open the Code Menu](#step-2-open-the-code-menu)
+  - [Step 3: Switch to the Codespaces Tab](#step-3-switch-to-the-codespaces-tab)
+  - [Step 4: Create a Codespace](#step-4-create-a-codespace)
+  - [Step 5: Install Dependencies](#step-5-install-dependencies)
+  - [Step 6: Start the Server](#step-6-start-the-server)
+  - [Step 7: Access the Application](#step-7-access-the-application)
+  - [Step 8: Test Multiplayer](#step-8-test-multiplayer)
+  - [Branches](#branches)
+  - [Stopping and Restarting](#stopping-and-restarting)
+  - [Troubleshooting](#troubleshooting)
+- [Advantages Over Custom Physics](#advantages-over-custom-physics)
+- [Possible Enhancements](#possible-enhancements)
+- [Matter.js Advanced Features](#matterjs-advanced-features)
+  - [Constraints (not implemented, but possible)](#constraints-not-implemented-but-possible)
+  - [Collision Events](#collision-events)
+  - [Sensors (non-solid trigger zones)](#sensors-non-solid-trigger-zones)
+- [Why Not p5.play?](#why-not-p5play)
+- [Related Examples](#related-examples)
+- [Learning Resources](#learning-resources)
+- [Credits](#credits)
+
+<!-- END doctoc generated TOC please keep comment here to allow auto update -->
 
 ## What it does
 
