@@ -2,22 +2,21 @@
 // Centralized server for "Rock-Paper-Scissors Coliseum"
 // -----------------------------------------------------
 // How to run:
-// 1) npm init -y
-// 2) npm install express socket.io
-// 3) node server.js
-// 4) Open http://localhost:3000 in multiple tabs to test
+// 1) npm install         (already set up for express + socket.io v2)
+// 2) node server.js
+// 3) Open http://localhost:3000 in multiple tabs to test
 
 const express = require('express');
 const http = require('http');
-const { Server } = require('socket.io');
+const socketIO = require('socket.io'); // v2 style require
 
 const PORT = process.env.PORT || 3000;
 
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server);
+const io = socketIO(server); // v2 style initialization
 
-// Serve index.html from the same directory
+// Serve index.html and other static assets from this directory
 app.use(express.static(__dirname));
 
 // ----------------------
@@ -122,6 +121,18 @@ function rpsWinner(moveA, moveB) {
   return 'B';
 }
 
+// Helper to look up a socket.id in Socket.IO v2
+function getSocketById(id) {
+  // In v2, sockets are stored as an object: io.sockets.sockets or io.sockets.connected
+  if (io.sockets && io.sockets.sockets && io.sockets.sockets[id]) {
+    return io.sockets.sockets[id];
+  }
+  if (io.sockets && io.sockets.connected && io.sockets.connected[id]) {
+    return io.sockets.connected[id];
+  }
+  return null;
+}
+
 // Create a new match from two player IDs
 function createMatch(playerIdA, playerIdB) {
   const matchId = `${playerIdA}_${playerIdB}_${Date.now()}`;
@@ -146,7 +157,7 @@ function createMatch(playerIdA, playerIdB) {
   match.players.forEach(pid => {
     const p = safeGetPlayer(pid);
     if (!p) return;
-    const socket = io.sockets.sockets.get(pid);
+    const socket = getSocketById(pid);
     if (!socket) return;
 
     // Leave lobby room and join match room
@@ -279,10 +290,9 @@ function endMatch(match, winnerId) {
     finalScores: match.scores
   });
 
-  // Players will stay in the match room until they join lobby or rematch.
-  // For now, we’ll keep simple: automatically send them back to lobby.
+  // Send both players back to lobby and requeue them
   match.players.forEach(pid => {
-    const socket = io.sockets.sockets.get(pid);
+    const socket = getSocketById(pid);
     const player = safeGetPlayer(pid);
     if (socket && player) {
       socket.leave(match.roomId);
@@ -290,14 +300,12 @@ function endMatch(match, winnerId) {
       player.roomId = 'lobby';
       player.matchId = null;
       player.role = 'spectator';
-      // Put them back in lobby queue so they get matched again
       if (!waitingQueue.includes(pid)) {
         waitingQueue.push(pid);
       }
     }
   });
 
-  // Free up the match
   delete matches[match.id];
 
   broadcastLobbyState();
@@ -351,7 +359,7 @@ setInterval(() => {
   const now = Date.now();
   for (const [id, p] of Object.entries(players)) {
     if (now - p.timeLastHeartbeat > HEARTBEAT_TIMEOUT) {
-      const socket = io.sockets.sockets.get(id);
+      const socket = getSocketById(id);
       if (socket) {
         // This will trigger the normal 'disconnect' handler
         socket.disconnect(true);
