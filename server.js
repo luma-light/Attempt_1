@@ -1,343 +1,497 @@
-'use strict';
+// server.js
+// Centralized server for "Rock-Paper-Scissors Coliseum"
+// -----------------------------------------------------
+// How to run:
+// 1) npm init -y
+// 2) npm install express socket.io
+// 3) node server.js
+// 4) Open http://localhost:3000 in multiple tabs to test
 
 const express = require('express');
-const socketIO = require('socket.io');
-const path = require('path');
-const Matter = require('matter-js');
+const http = require('http');
+const { Server } = require('socket.io');
 
 const PORT = process.env.PORT || 3000;
-const INDEX = path.join(__dirname, 'index.html');
 
-const server = express()
-    .use((req, res) => res.sendFile(INDEX))
-    .listen(PORT, () => console.log(`Listening on ${PORT}`));
+const app = express();
+const server = http.createServer(app);
+const io = new Server(server);
 
-const io = socketIO(server);
+// Serve index.html from the same directory
+app.use(express.static(__dirname));
 
-// ====== ROOM MANAGEMENT (3 Players Max) ======
+// ----------------------
+// Core server data model
+// ----------------------
 
-const MAX_PLAYERS_PER_ROOM = 3;
-const users = [];
+// All connected players keyed by socket.id
+let players = {};
+/*
+players[socketId] = {
+  id: socketId,
+  name: 'PlayerName',
+  preferredColor: '#ff00ff',
+  role: 'spectator' | 'player',
+  roomId: 'lobby' | `match:${matchId}`,
+  matchId: null | matchId,
+  totalWins: 0,
+  totalLosses: 0,
+  timeLastHeartbeat: 0
+};
+*/
 
-// Helper function: Join user to room
-function userJoin(id, username, room) {
-    const user = { id, username, room };
-    users.push(user);
-    return user;
+// All matches keyed by matchId
+let matches = {};
+/*
+matches[matchId] = {
+  id: matchId,
+  players: [socketIdA, socketIdB],
+  scores: { [socketIdA]: 0, [socketIdB]: 0 },
+  round: 1,
+  currentTurn: socketIdA,
+  turnDeadline: Date.now() + 10000,
+  moves: { [socketIdA]: null, [socketIdB]: null },
+  status: 'active' | 'finished',
+  roomId: `match:${matchId}`,
+  rematchVotes: { [socketIdA]: false, [socketIdB]: false }
+};
+*/
+
+// Ordered list of socketIds ready to play
+let waitingQueue = [];
+
+// Global stats for fun display / debugging
+let globalStats = {
+  totalMatchesPlayed: 0,
+  totalRoundsPlayed: 0
+};
+
+// Heartbeat / AFK timeout in ms
+const HEARTBEAT_TIMEOUT = 15000; // 15 seconds
+
+// Match config
+const ROUND_TIME_LIMIT = 10000; // 10 seconds per turn
+const WINS_TO_TAKE_MATCH = 3;
+
+// -------------
+// Helper utils
+// -------------
+
+function safeGetPlayer(id) {
+  return players[id] || null;
 }
 
-// Helper function: Get the current user
-function getCurrentUser(id) {
-    return users.find(user => user.id === id);
+function broadcastLobbyState() {
+  // Build spectators + active matches snapshot
+  const spectators = Object.values(players)
+    .filter(p => p.role === 'spectator')
+    .map(p => ({
+      id: p.id,
+      name: p.name,
+      totalWins: p.totalWins,
+      totalLosses: p.totalLosses
+    }));
+
+  const activeMatches = Object.values(matches)
+    .filter(m => m.status === 'active')
+    .map(m => ({
+      matchId: m.id,
+      players: m.players.map(pid => {
+        const p = safeGetPlayer(pid);
+        return p
+          ? { id: p.id, name: p.name }
+          : { id: pid, name: 'Unknown' };
+      }),
+      scores: m.scores
+    }));
+
+  io.to('lobby').emit('lobbyState', {
+    spectators,
+    activeMatches,
+    globalStats,
+    serverTime: Date.now()
+  });
 }
 
-// Helper function: User leaves room
-function userLeave(id) {
-    const index = users.findIndex(user => user.id === id);
-    if (index !== -1) {
-        return users.splice(index, 1)[0];
+// Decide the RPS result from perspective of playerA vs playerB
+function rpsWinner(moveA, moveB) {
+  if (moveA === moveB) return 'tie';
+  if (moveA === 'rock' && moveB === 'scissors') return 'A';
+  if (moveA === 'paper' && moveB === 'rock') return 'A';
+  if (moveA === 'scissors' && moveB === 'paper') return 'A';
+  return 'B';
+}
+
+// Create a new match from two player IDs
+function createMatch(playerIdA, playerIdB) {
+  const matchId = `${playerIdA}_${playerIdB}_${Date.now()}`;
+  const roomId = `match:${matchId}`;
+
+  const match = {
+    id: matchId,
+    players: [playerIdA, playerIdB],
+    scores: { [playerIdA]: 0, [playerIdB]: 0 },
+    round: 1,
+    currentTurn: playerIdA, // arbitrary who starts
+    turnDeadline: Date.now() + ROUND_TIME_LIMIT,
+    moves: { [playerIdA]: null, [playerIdB]: null },
+    status: 'active',
+    roomId,
+    rematchVotes: { [playerIdA]: false, [playerIdB]: false }
+  };
+
+  matches[matchId] = match;
+
+  // Move both players to the match room
+  match.players.forEach(pid => {
+    const p = safeGetPlayer(pid);
+    if (!p) return;
+    const socket = io.sockets.sockets.get(pid);
+    if (!socket) return;
+
+    // Leave lobby room and join match room
+    socket.leave('lobby');
+    socket.join(roomId);
+    p.roomId = roomId;
+    p.matchId = matchId;
+    p.role = 'player';
+  });
+
+  // Emit match_start to the room
+  io.to(roomId).emit('match_start', {
+    timestamp: Date.now(),
+    matchId,
+    players: match.players.map(pid => {
+      const p = safeGetPlayer(pid);
+      return p ? { id: p.id, name: p.name } : { id: pid, name: 'Unknown' };
+    }),
+    scores: match.scores,
+    round: match.round,
+    startingPlayer: match.currentTurn,
+    serverTime: Date.now()
+  });
+
+  // Emit initial turnUpdate
+  emitTurnUpdate(match);
+
+  // Lobby changed (two players left)
+  broadcastLobbyState();
+}
+
+function emitTurnUpdate(match) {
+  io.to(match.roomId).emit('turnUpdate', {
+    timestamp: Date.now(),
+    matchId: match.id,
+    holderId: match.currentTurn,
+    expiresAt: match.turnDeadline
+  });
+}
+
+// Called whenever both moves are present, or a timeout/forfeit occurs
+function resolveRound(match, reason) {
+  if (!match || match.status !== 'active') return;
+
+  const [idA, idB] = match.players;
+  const moveA = match.moves[idA];
+  const moveB = match.moves[idB];
+
+  let winnerId = null;
+  let roundReason = reason;
+
+  if (reason === 'moves') {
+    const result = rpsWinner(moveA, moveB);
+    if (result === 'A') winnerId = idA;
+    else if (result === 'B') winnerId = idB;
+    else winnerId = null; // tie
+  } else if (reason === 'timeout') {
+    // Whoever failed to choose loses
+    if (moveA && !moveB) winnerId = idA;
+    else if (!moveA && moveB) winnerId = idB;
+    else winnerId = null; // both failed? treat as tie
+  } else if (reason === 'disconnect' || reason === 'forfeit') {
+    // One of the players left
+    if (!safeGetPlayer(idA)) winnerId = idB;
+    else if (!safeGetPlayer(idB)) winnerId = idA;
+  }
+
+  // Update scores if there is a winner
+  if (winnerId) {
+    match.scores[winnerId] = (match.scores[winnerId] || 0) + 1;
+  }
+
+  globalStats.totalRoundsPlayed++;
+
+  // Reveal round result to match room
+  io.to(match.roomId).emit('round_result', {
+    timestamp: Date.now(),
+    matchId: match.id,
+    round: match.round,
+    winnerId,
+    reason: roundReason,
+    scores: match.scores,
+    revealedMoves: {
+      [idA]: moveA,
+      [idB]: moveB
     }
+  });
+
+  // Win condition?
+  const maxScore = Math.max(
+    match.scores[idA] || 0,
+    match.scores[idB] || 0
+  );
+  if (maxScore >= WINS_TO_TAKE_MATCH || reason === 'disconnect' || reason === 'forfeit') {
+    endMatch(match, winnerId);
+  } else {
+    // Next round
+    match.round += 1;
+    match.moves[idA] = null;
+    match.moves[idB] = null;
+    match.currentTurn = idA === match.currentTurn ? idB : idA;
+    match.turnDeadline = Date.now() + ROUND_TIME_LIMIT;
+    emitTurnUpdate(match);
+  }
 }
 
-// Helper function: Get all users in a room
-function getRoomUsers(room) {
-    return users.filter(user => user.room === room);
-}
+function endMatch(match, winnerId) {
+  if (!match || match.status === 'finished') return;
+  match.status = 'finished';
+  globalStats.totalMatchesPlayed++;
 
-// ====== MATTER.JS PHYSICS ENGINE SETUP ======
+  const [idA, idB] = match.players;
+  const pA = safeGetPlayer(idA);
+  const pB = safeGetPlayer(idB);
 
-const Engine = Matter.Engine;
-const World = Matter.World;
-const Bodies = Matter.Bodies;
-const Body = Matter.Body;
-
-// World settings (shared constants)
-const WORLD_WIDTH = 800;
-const WORLD_HEIGHT = 600;
-
-// Store physics worlds per room
-const rooms = {}; // { roomName: { engine, world, bodies, nextBodyId } }
-
-// Helper function: Create a new physics world for a room
-function createRoomPhysics(roomName) {
-    // Create physics engine
-    const engine = Engine.create();
-    const world = engine.world;
-
-    // Set gravity
-    engine.world.gravity.y = 1; // Matter.js units (1 = normal Earth gravity)
-
-    // Create static walls
-    const wallThickness = 50;
-    const walls = [
-        Bodies.rectangle(WORLD_WIDTH / 2, -wallThickness / 2, WORLD_WIDTH, wallThickness, { isStatic: true }), // Top
-        Bodies.rectangle(WORLD_WIDTH / 2, WORLD_HEIGHT + wallThickness / 2, WORLD_WIDTH, wallThickness, { isStatic: true }), // Bottom
-        Bodies.rectangle(-wallThickness / 2, WORLD_HEIGHT / 2, wallThickness, WORLD_HEIGHT, { isStatic: true }), // Left
-        Bodies.rectangle(WORLD_WIDTH + wallThickness / 2, WORLD_HEIGHT / 2, wallThickness, WORLD_HEIGHT, { isStatic: true }) // Right
-    ];
-
-    World.add(world, walls);
-
-    // Create room object
-    rooms[roomName] = {
-        engine: engine,
-        world: world,
-        bodies: [], // Track dynamic bodies (circles and boxes)
-        nextBodyId: 0
-    };
-
-    console.log(`Physics world created for room: ${roomName}`);
-    return rooms[roomName];
-}
-
-// Helper function: Get room physics (creates if doesn't exist)
-function getRoomPhysics(roomName) {
-    if (!rooms[roomName]) {
-        return createRoomPhysics(roomName);
+  if (winnerId && pA && pB) {
+    if (winnerId === idA) {
+      pA.totalWins++;
+      pB.totalLosses++;
+    } else if (winnerId === idB) {
+      pB.totalWins++;
+      pA.totalLosses++;
     }
-    return rooms[roomName];
-}
+  }
 
-// Helper function: Delete room physics when empty
-function deleteRoomPhysics(roomName) {
-    if (rooms[roomName]) {
-        delete rooms[roomName];
-        console.log(`Physics world deleted for room: ${roomName}`);
+  io.to(match.roomId).emit('game_end', {
+    timestamp: Date.now(),
+    matchId: match.id,
+    winnerId,
+    finalScores: match.scores
+  });
+
+  // Players will stay in the match room until they join lobby or rematch.
+  // For now, we’ll keep simple: automatically send them back to lobby.
+  match.players.forEach(pid => {
+    const socket = io.sockets.sockets.get(pid);
+    const player = safeGetPlayer(pid);
+    if (socket && player) {
+      socket.leave(match.roomId);
+      socket.join('lobby');
+      player.roomId = 'lobby';
+      player.matchId = null;
+      player.role = 'spectator';
+      // Put them back in lobby queue so they get matched again
+      if (!waitingQueue.includes(pid)) {
+        waitingQueue.push(pid);
+      }
     }
+  });
+
+  // Free up the match
+  delete matches[match.id];
+
+  broadcastLobbyState();
+  tryStartMatches();
 }
 
-// ====== HELPER FUNCTIONS (Room-Specific) ======
+function tryStartMatches() {
+  // While we have at least two people waiting, start a new match
+  while (waitingQueue.length >= 2) {
+    const playerIdA = waitingQueue.shift();
+    const playerIdB = waitingQueue.shift();
 
-function createCircle(roomName, x, y) {
-    const room = getRoomPhysics(roomName);
+    // Basic sanity check
+    const pA = safeGetPlayer(playerIdA);
+    const pB = safeGetPlayer(playerIdB);
+    if (!pA || !pB) continue;
 
-    const radius = 15 + Math.random() * 25; // Random size 15-40
-    const circle = Bodies.circle(x, y, radius, {
-        restitution: 0.8, // Bounciness
-        friction: 0.01,
-        density: 0.001,
-        render: {
-            fillStyle: `rgb(${Math.floor(Math.random() * 256)}, ${Math.floor(Math.random() * 256)}, ${Math.floor(Math.random() * 256)})`
-        }
-    });
-
-    const bodyData = {
-        id: room.nextBodyId++,
-        matterId: circle.id,
-        type: 'circle',
-        radius: radius,
-        color: circle.render.fillStyle
-    };
-
-    World.add(room.world, circle);
-    room.bodies.push({ matter: circle, data: bodyData });
-
-    return bodyData;
+    createMatch(playerIdA, playerIdB);
+  }
 }
 
-function createBox(roomName, x, y) {
-    const room = getRoomPhysics(roomName);
-
-    const size = 20 + Math.random() * 40; // Random size 20-60
-    const box = Bodies.rectangle(x, y, size, size, {
-        restitution: 0.6,
-        friction: 0.05,
-        density: 0.001,
-        render: {
-            fillStyle: `rgb(${Math.floor(Math.random() * 256)}, ${Math.floor(Math.random() * 256)}, ${Math.floor(Math.random() * 256)})`
-        }
-    });
-
-    const bodyData = {
-        id: room.nextBodyId++,
-        matterId: box.id,
-        type: 'box',
-        width: size,
-        height: size,
-        color: box.render.fillStyle
-    };
-
-    World.add(room.world, box);
-    room.bodies.push({ matter: box, data: bodyData });
-
-    return bodyData;
+// Remove player from waitingQueue helper
+function removeFromWaitingQueue(id) {
+  waitingQueue = waitingQueue.filter(pid => pid !== id);
 }
 
-function clearAllBodies(roomName) {
-    const room = rooms[roomName];
-    if (room) {
-        room.bodies.forEach(b => World.remove(room.world, b.matter));
-        room.bodies = [];
-    }
+// Handle player leaving a match (manual or disconnect)
+function handlePlayerLeaveMatch(socketId, reason) {
+  const player = safeGetPlayer(socketId);
+  if (!player || !player.matchId) return;
+  const match = matches[player.matchId];
+  if (!match) {
+    player.matchId = null;
+    player.roomId = 'lobby';
+    player.role = 'spectator';
+    return;
+  }
+
+  // Mark their move as null if not set
+  match.moves[socketId] = match.moves[socketId] || null;
+
+  // Resolve with forfeit / disconnect
+  resolveRound(match, reason || 'disconnect');
 }
 
-// Serialize physics state for clients
-function getPhysicsState(roomName) {
-    const room = rooms[roomName];
-    if (!room) return [];
+// ----------------------
+// Heartbeat AFK cleaner
+// ----------------------
 
-    return room.bodies.map(b => {
-        const matter = b.matter;
-        return {
-            id: b.data.id,
-            type: b.data.type,
-            x: matter.position.x,
-            y: matter.position.y,
-            angle: matter.angle,
-            vx: matter.velocity.x,
-            vy: matter.velocity.y,
-            angularVelocity: matter.angularVelocity,
-            radius: b.data.radius,
-            width: b.data.width,
-            height: b.data.height,
-            color: b.data.color
-        };
-    });
-}
-
-// ====== GAME LOOP (All Rooms) ======
-
-const TICK_RATE = 60; // 60 FPS physics simulation
-const UPDATE_RATE = 20; // Send updates to clients at 20 Hz
-
-// Physics update loop - updates all active room physics
 setInterval(() => {
-    Object.keys(rooms).forEach(roomName => {
-        const room = rooms[roomName];
-        Engine.update(room.engine, 1000 / TICK_RATE);
-    });
-}, 1000 / TICK_RATE);
-
-// Network update loop - sends updates to each room
-setInterval(() => {
-    Object.keys(rooms).forEach(roomName => {
-        const room = rooms[roomName];
-        if (room.bodies.length > 0) {
-            io.to(roomName).emit('physicsUpdate', getPhysicsState(roomName));
+  const now = Date.now();
+  for (const [id, p] of Object.entries(players)) {
+    if (now - p.timeLastHeartbeat > HEARTBEAT_TIMEOUT) {
+      const socket = io.sockets.sockets.get(id);
+      if (socket) {
+        // This will trigger the normal 'disconnect' handler
+        socket.disconnect(true);
+      } else {
+        // No socket; clean up manually
+        removeFromWaitingQueue(id);
+        if (p.matchId) {
+          handlePlayerLeaveMatch(id, 'disconnect');
         }
-    });
-}, 1000 / UPDATE_RATE);
+        delete players[id];
+      }
+    }
+  }
+}, 5000);
 
-// ====== SOCKET.IO HANDLERS ======
+// ----------------------
+// Socket.io event wiring
+// ----------------------
 
-io.on('connection', (socket) => {
-    console.log(`Client connected: ${socket.id}`);
+io.on('connection', socket => {
+  console.log('Client connected:', socket.id);
 
-    // Handle room join request
-    socket.on('joinRoom', ({ username, room }) => {
-        console.log(`User ${username} attempting to join room: ${room}`);
+  // Initialize a very barebones player record; upgraded on joinLobby
+  players[socket.id] = {
+    id: socket.id,
+    name: 'Anonymous',
+    preferredColor: '#ffffff',
+    role: 'spectator',
+    roomId: 'lobby',
+    matchId: null,
+    totalWins: 0,
+    totalLosses: 0,
+    timeLastHeartbeat: Date.now()
+  };
 
-        // Check if room is full
-        if (getRoomUsers(room).length >= MAX_PLAYERS_PER_ROOM) {
-            socket.emit('roomFull', {
-                message: `Room "${room}" is full! Maximum ${MAX_PLAYERS_PER_ROOM} players allowed.`
-            });
-            console.log(`Room ${room} is full. User ${username} rejected.`);
-            return;
-        }
+  socket.join('lobby');
+  broadcastLobbyState();
 
-        // Join the user to the room
-        const user = userJoin(socket.id, username, room);
-        socket.join(user.room);
+  // Client wants to enter lobby with a name/color
+  socket.on('joinLobby', data => {
+    const now = Date.now();
+    const player = safeGetPlayer(socket.id);
+    if (!player) return;
 
-        // Create or get physics world for this room
-        getRoomPhysics(user.room);
+    const name = (data && data.name) ? String(data.name).slice(0, 20) : 'Anonymous';
+    const preferredColor = (data && data.preferredColor) || '#ff00ff';
 
-        // Send initial world state to the joining player
-        socket.emit('worldState', {
-            width: WORLD_WIDTH,
-            height: WORLD_HEIGHT,
-            bodies: getPhysicsState(user.room)
-        });
+    player.name = name;
+    player.preferredColor = preferredColor;
+    player.role = 'spectator';
+    player.roomId = 'lobby';
+    player.matchId = null;
+    player.timeLastHeartbeat = now;
 
-        // Notify room about player count
-        const roomUsers = getRoomUsers(user.room);
-        io.to(user.room).emit('roomInfo', {
-            room: user.room,
-            playerCount: roomUsers.length,
-            maxPlayers: MAX_PLAYERS_PER_ROOM,
-            players: roomUsers.map(u => u.username)
-        });
+    // Put them into waiting queue
+    if (!waitingQueue.includes(socket.id)) {
+      waitingQueue.push(socket.id);
+    }
 
-        console.log(`${username} joined room ${room}. Players: ${roomUsers.length}/${MAX_PLAYERS_PER_ROOM}`);
-    });
+    console.log(`Player ${player.id} joined lobby as "${player.name}"`);
 
-    // Spawn circle
-    socket.on('spawnCircle', (data) => {
-        const user = getCurrentUser(socket.id);
-        if (!user) return;
+    broadcastLobbyState();
+    tryStartMatches();
+  });
 
-        const bodyData = createCircle(user.room, data.x, data.y);
-        io.to(user.room).emit('bodySpawned', bodyData);
-        console.log(`Circle ${bodyData.id} spawned in room ${user.room} at (${data.x}, ${data.y})`);
-    });
+  // Heartbeat to detect AFK / dead sockets
+  socket.on('heartbeat', data => {
+    const player = safeGetPlayer(socket.id);
+    if (!player) return;
+    player.timeLastHeartbeat = data && data.timestamp ? data.timestamp : Date.now();
+  });
 
-    // Spawn box
-    socket.on('spawnBox', (data) => {
-        const user = getCurrentUser(socket.id);
-        if (!user) return;
+  // Player chooses R/P/S
+  socket.on('playerMove', data => {
+    const player = safeGetPlayer(socket.id);
+    if (!player) return;
+    if (!data) return;
 
-        const bodyData = createBox(user.room, data.x, data.y);
-        io.to(user.room).emit('bodySpawned', bodyData);
-        console.log(`Box ${bodyData.id} spawned in room ${user.room} at (${data.x}, ${data.y})`);
-    });
+    const matchId = data.matchId;
+    const move = data.move;
 
-    // Apply explosion force
-    socket.on('explode', (data) => {
-        const user = getCurrentUser(socket.id);
-        if (!user) return;
+    const match = matches[matchId];
+    if (!match || match.status !== 'active') return;
 
-        const room = rooms[user.room];
-        if (!room) return;
+    // Validation
+    if (!match.players.includes(socket.id)) return;
+    if (match.currentTurn !== socket.id) return;
+    if (!['rock', 'paper', 'scissors'].includes(move)) return;
 
-        room.bodies.forEach(b => {
-            const dx = b.matter.position.x - data.x;
-            const dy = b.matter.position.y - data.y;
-            const distance = Math.sqrt(dx * dx + dy * dy);
+    match.moves[socket.id] = move;
 
-            if (distance < data.radius) {
-                const forceMagnitude = data.power / (distance + 1);
-                const forceX = (dx / distance) * forceMagnitude;
-                const forceY = (dy / distance) * forceMagnitude;
-                Body.applyForce(b.matter, b.matter.position, { x: forceX, y: forceY });
-            }
-        });
-        console.log(`Explosion in room ${user.room} at (${data.x}, ${data.y})`);
-    });
+    // If both moves are non-null, resolve the round
+    const [idA, idB] = match.players;
+    if (match.moves[idA] && match.moves[idB]) {
+      resolveRound(match, 'moves');
+    }
+  });
 
-    // Clear all bodies
-    socket.on('clearBodies', () => {
-        const user = getCurrentUser(socket.id);
-        if (!user) return;
+  // Player wants a rematch (optional: here we just requeue them)
+  socket.on('requestRematch', data => {
+    const player = safeGetPlayer(socket.id);
+    if (!player || !data) return;
+    // Simple approach: just requeue this player
+    if (!waitingQueue.includes(socket.id)) {
+      waitingQueue.push(socket.id);
+      broadcastLobbyState();
+      tryStartMatches();
+    }
+  });
 
-        clearAllBodies(user.room);
-        io.to(user.room).emit('bodiesCleared');
-        console.log(`All bodies cleared in room ${user.room}`);
-    });
+  // Player manually leaves a match
+  socket.on('leaveMatch', data => {
+    const player = safeGetPlayer(socket.id);
+    if (!player) return;
+    if (!player.matchId) return;
+    handlePlayerLeaveMatch(socket.id, 'forfeit');
+  });
 
-    // Handle disconnect
-    socket.on('disconnect', () => {
-        const user = userLeave(socket.id);
+  socket.on('disconnect', () => {
+    console.log('Client disconnected:', socket.id);
+    const player = safeGetPlayer(socket.id);
+    if (!player) {
+      return;
+    }
 
-        if (user) {
-            console.log(`Client disconnected: ${user.username} from room ${user.room}`);
+    // Remove from waiting queue
+    removeFromWaitingQueue(socket.id);
 
-            // Update room info
-            const roomUsers = getRoomUsers(user.room);
-            io.to(user.room).emit('roomInfo', {
-                room: user.room,
-                playerCount: roomUsers.length,
-                maxPlayers: MAX_PLAYERS_PER_ROOM,
-                players: roomUsers.map(u => u.username)
-            });
+    // If they were in a match, handle it
+    if (player.matchId) {
+      handlePlayerLeaveMatch(socket.id, 'disconnect');
+    }
 
-            // If room is empty, delete the physics world
-            if (roomUsers.length === 0) {
-                deleteRoomPhysics(user.room);
-            }
-        }
-    });
+    // Finally, delete from players
+    delete players[socket.id];
+
+    broadcastLobbyState();
+  });
 });
 
-console.log('Matter.js physics engine initialized');
-console.log(`World: ${WORLD_WIDTH}x${WORLD_HEIGHT}`);
+server.listen(PORT, () => {
+  console.log(`Server running on http://localhost:${PORT}`);
+});

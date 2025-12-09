@@ -1,412 +1,577 @@
+<!-- index.html -->
+<!--
+  Rock-Paper-Scissors Coliseum
+  Client built with p5.js + socket.io
+  - Open multiple tabs to test multiplayer.
+  - Click the Rock / Paper / Scissors buttons during a match.
+  - Press 'L' to leave (forfeit) a match.
+-->
+
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>p5.js + Matter.js Physics Server</title>
-    <meta charset="utf-8">
-    <style>
-        body {
-            margin: 0;
-            padding: 0;
-            background: #1a1a1a;
-            font-family: Arial, sans-serif;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            min-height: 100vh;
-        }
-        #joinScreen {
-            background: rgba(255, 255, 255, 0.95);
-            padding: 30px;
-            border-radius: 10px;
-            text-align: center;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.4);
-            max-width: 400px;
-        }
-        #joinScreen h2 {
-            margin: 0 0 20px 0;
-            color: #333;
-        }
-        #joinScreen input {
-            width: 100%;
-            padding: 10px;
-            margin: 10px 0;
-            border: 2px solid #ddd;
-            border-radius: 5px;
-            font-size: 14px;
-            box-sizing: border-box;
-        }
-        #joinScreen input:focus {
-            outline: none;
-            border-color: #2196F3;
-        }
-        #joinBtn {
-            width: 100%;
-            padding: 12px;
-            margin-top: 10px;
-            font-size: 16px;
-            font-weight: bold;
-            background: #2196F3;
-            color: white;
-            border: none;
-            border-radius: 5px;
-            cursor: pointer;
-        }
-        #joinBtn:hover {
-            background: #0b7dda;
-        }
-        #errorMessage {
-            color: #f44336;
-            margin-top: 10px;
-            display: none;
-        }
-        #gameContainer {
-            display: none;
-        }
-        #controls {
-            background: rgba(255, 255, 255, 0.95);
-            padding: 20px;
-            border-radius: 10px;
-            margin-bottom: 15px;
-            text-align: center;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.4);
-            max-width: 800px;
-        }
-        h2 {
-            margin: 0 0 15px 0;
-            color: #333;
-        }
-        #roomInfo {
-            background: #e3f2fd;
-            padding: 10px;
-            border-radius: 5px;
-            margin-bottom: 15px;
-            font-size: 14px;
-        }
-        .player-name {
-            display: inline-block;
-            background: #4CAF50;
-            color: white;
-            padding: 3px 8px;
-            margin: 2px;
-            border-radius: 3px;
-            font-size: 12px;
-        }
-        .button-row {
-            margin: 10px 0;
-        }
-        button {
-            padding: 12px 24px;
-            margin: 0 5px;
-            font-size: 14px;
-            cursor: pointer;
-            border: none;
-            border-radius: 6px;
-            background: #2196F3;
-            color: white;
-            transition: all 0.3s;
-            font-weight: bold;
-        }
-        button:hover {
-            background: #0b7dda;
-            transform: translateY(-2px);
-            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
-        }
-        button.circle {
-            background: #4CAF50;
-        }
-        button.circle:hover {
-            background: #45a049;
-        }
-        button.box {
-            background: #FF9800;
-        }
-        button.box:hover {
-            background: #e68900;
-        }
-        button.explode {
-            background: #f44336;
-        }
-        button.explode:hover {
-            background: #da190b;
-        }
-        button.clear {
-            background: #9E9E9E;
-        }
-        button.clear:hover {
-            background: #757575;
-        }
-        #info {
-            color: #666;
-            font-size: 12px;
-            margin-top: 10px;
-            line-height: 1.6;
-        }
-        .mode {
-            display: inline-block;
-            padding: 4px 10px;
-            margin: 5px;
-            background: #e3f2fd;
-            border-radius: 4px;
-            font-family: monospace;
-            font-size: 11px;
-        }
-        canvas {
-            border: 3px solid #333;
-            box-shadow: 0 6px 30px rgba(0,0,0,0.6);
-            cursor: crosshair;
-        }
-    </style>
+  <meta charset="UTF-8" />
+  <title>RPS Coliseum</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <!-- p5.js -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
+  <!-- socket.io client from the server -->
+  <script src="/socket.io/socket.io.js"></script>
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      background: #111;
+      color: #eee;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      overflow: hidden;
+    }
+    canvas {
+      display: block;
+    }
+  </style>
 </head>
 <body>
-    <!-- Join Screen (shown first) -->
-    <div id="joinScreen">
-        <h2>🎮 p5.js + Matter.js Physics Server</h2>
-        <p>Enter your details to join a room (max 3 players per room)</p>
-        <input type="text" id="usernameInput" placeholder="Your name" maxlength="20" required>
-        <input type="text" id="roomInput" placeholder="Room name" maxlength="20" required>
-        <button id="joinBtn">Join Room</button>
-        <div id="errorMessage"></div>
-    </div>
+<script>
+// ---------------------------
+// Client-side global state
+// ---------------------------
 
-    <!-- Game Container (shown after joining) -->
-    <div id="gameContainer">
-        <div id="controls">
-            <h2>🎮 p5.js + Matter.js Physics Server</h2>
+let socket;
+let connectionStatus = 'connecting'; // 'connecting' | 'connected' | 'disconnected' | 'reconnecting'
 
-            <div id="roomInfo"></div>
+let myPlayer = {
+  id: null,
+  name: null,
+  preferredColor: '#ff00ff',
+  totalWins: 0,
+  totalLosses: 0
+};
 
-            <div class="button-row">
-                <button id="circleBtn" class="circle">🔵 Circle Mode</button>
-                <button id="boxBtn" class="box">🟧 Box Mode</button>
-                <button id="explodeBtn" class="explode">💥 Explode Mode</button>
-            </div>
+let lobbyState = {
+  spectators: [],
+  activeMatches: [],
+  globalStats: { totalMatchesPlayed: 0, totalRoundsPlayed: 0 }
+};
 
-            <div class="button-row">
-                <button id="clearBtn" class="clear">🗑️ Clear All</button>
-            </div>
+let currentMatch = null; // snapshot of the current match for this client
+let turnInfo = {
+  holderId: null,
+  expiresAt: 0
+};
+let lastRoundResult = null; // { winnerId, reason, round, revealedMoves, scores }
 
-            <div id="info">
-                <strong>Current Mode:</strong> <span class="mode" id="currentMode">Circle</span><br>
-                <strong>Instructions:</strong> Click canvas to spawn objects or create explosions<br>
-                Matter.js physics runs on server @ 60 FPS | p5.js renders on client @ 60 FPS | Network @ 20 Hz
-            </div>
-        </div>
-    </div>
+let uiMode = 'lobby'; // 'lobby' | 'match'
+let hasSubmittedMoveThisRound = false;
 
-    <!-- Load p5.js from CDN -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.4.0/p5.min.js"></script>
+// Button bounds for R/P/S in match UI
+let rpsButtons = [];
 
-    <!-- Load Socket.IO client from CDN -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/2.0.3/socket.io.js"></script>
+// ---------------------------
+// Setup & socket connection
+// ---------------------------
 
-    <!-- p5.js sketch -->
-    <script>
-        // Connect to Socket.IO server
-        var socket = io();
+function setup() {
+  createCanvas(windowWidth, windowHeight);
 
-        // World dimensions
-        let worldWidth = 800;
-        let worldHeight = 600;
+  // Ask for a name once
+  let name = prompt("Enter your gladiator name:", "Player");
+  if (!name || !name.trim()) {
+    name = "Player";
+  }
+  myPlayer.name = name.trim().slice(0, 20);
+  // Give each client a random-ish color
+  myPlayer.preferredColor = randomColor();
 
-        // Client-side body storage (rendering only)
-        let bodies = {};
+  initSocket();
+  setupHeartbeat();
 
-        // Interaction mode
-        let mode = 'circle'; // 'circle', 'box', or 'explode'
+  textFont('system-ui');
+  textAlign(LEFT, TOP);
+}
 
-        // Room state
-        let username = '';
-        let roomName = '';
-        let inRoom = false;
+function windowResized() {
+  resizeCanvas(windowWidth, windowHeight);
+}
 
-        // ====== JOIN ROOM LOGIC ======
+function randomColor() {
+  const r = floor(random(80, 255)).toString(16).padStart(2, '0');
+  const g = floor(random(80, 255)).toString(16).padStart(2, '0');
+  const b = floor(random(80, 255)).toString(16).padStart(2, '0');
+  return `#${r}${g}${b}`;
+}
 
-        // Handle join button click
-        document.getElementById('joinBtn').addEventListener('click', () => {
-            username = document.getElementById('usernameInput').value.trim();
-            roomName = document.getElementById('roomInput').value.trim();
+function initSocket() {
+  socket = io();
 
-            if (!username || !roomName) {
-                showError('Please enter both name and room name!');
-                return;
-            }
+  connectionStatus = 'connecting';
 
-            // Send join request to server
-            socket.emit('joinRoom', { username, room: roomName });
-        });
+  socket.on('connect', () => {
+    connectionStatus = 'connected';
+    myPlayer.id = socket.id;
+    // Join the lobby right away
+    socket.emit('joinLobby', {
+      name: myPlayer.name,
+      preferredColor: myPlayer.preferredColor,
+      timestamp: Date.now()
+    });
+  });
 
-        // Handle Enter key in input fields
-        document.getElementById('usernameInput').addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') document.getElementById('joinBtn').click();
-        });
-        document.getElementById('roomInput').addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') document.getElementById('joinBtn').click();
-        });
+  socket.on('disconnect', () => {
+    connectionStatus = 'disconnected';
+  });
 
-        // Handle room full error
-        socket.on('roomFull', (data) => {
-            showError(data.message);
-        });
+  // Lobby snapshot from server
+  socket.on('lobbyState', data => {
+    if (!data) return;
+    lobbyState.spectators = data.spectators || [];
+    lobbyState.activeMatches = data.activeMatches || [];
+    lobbyState.globalStats = data.globalStats || lobbyState.globalStats;
+    // If we're not in a match, make sure UI mode is lobby
+    if (!currentMatch) {
+      uiMode = 'lobby';
+    }
+  });
 
-        // Handle room info updates
-        socket.on('roomInfo', (data) => {
-            const roomInfoDiv = document.getElementById('roomInfo');
-            const playersList = data.players.map(p => `<span class="player-name">${p}</span>`).join(' ');
-            roomInfoDiv.innerHTML = `
-                <strong>Room:</strong> ${data.room} |
-                <strong>Players:</strong> ${data.playerCount}/${data.maxPlayers}<br>
-                ${playersList}
-            `;
-        });
+  // A new match has started for us
+  socket.on('match_start', data => {
+    if (!data) return;
+    uiMode = 'match';
+    currentMatch = {
+      matchId: data.matchId,
+      players: data.players || [],
+      scores: data.scores || {},
+      round: data.round || 1,
+      startingPlayer: data.startingPlayer
+    };
+    hasSubmittedMoveThisRound = false;
+    lastRoundResult = null;
+  });
 
-        function showError(message) {
-            const errorDiv = document.getElementById('errorMessage');
-            errorDiv.textContent = message;
-            errorDiv.style.display = 'block';
-            setTimeout(() => {
-                errorDiv.style.display = 'none';
-            }, 3000);
-        }
+  // Turn / countdown info
+  socket.on('turnUpdate', data => {
+    if (!data) return;
+    if (!currentMatch || currentMatch.matchId !== data.matchId) return;
+    turnInfo.holderId = data.holderId;
+    turnInfo.expiresAt = data.expiresAt;
+    hasSubmittedMoveThisRound = false;
+  });
 
-        // ====== P5.JS SETUP ======
+  // Result of a round (revealed moves, scores, etc.)
+  socket.on('round_result', data => {
+    if (!data) return;
+    if (!currentMatch || currentMatch.matchId !== data.matchId) return;
+    currentMatch.round = data.round;
+    currentMatch.scores = data.scores;
+    lastRoundResult = {
+      round: data.round,
+      winnerId: data.winnerId,
+      reason: data.reason,
+      revealedMoves: data.revealedMoves,
+      scores: data.scores
+    };
+    hasSubmittedMoveThisRound = false;
+  });
 
-        function setup() {
-            createCanvas(worldWidth, worldHeight);
-            frameRate(60);
+  // Match end screen
+  socket.on('game_end', data => {
+    if (!data) return;
+    // We briefly stay in match view, then we'll be sent back to lobby via new lobbyState
+    // For now, we just keep currentMatch until lobbyState arrives. The server
+    // requeues us, so soon we will be in a new match.
+  });
+}
 
-            // Receive initial world state (triggered after joining room)
-            socket.on('worldState', (data) => {
-                worldWidth = data.width;
-                worldHeight = data.height;
-                bodies = {};
-                data.bodies.forEach(bodyData => {
-                    bodies[bodyData.id] = bodyData;
-                });
-                console.log('World state received:', data);
+// Periodic heartbeat to server so it can detect AFK / closed tabs
+function setupHeartbeat() {
+  setInterval(() => {
+    if (socket && socket.connected) {
+      socket.emit('heartbeat', { timestamp: Date.now() });
+    }
+  }, 5000);
+}
 
-                // Switch to game screen
-                if (!inRoom) {
-                    inRoom = true;
-                    document.getElementById('joinScreen').style.display = 'none';
-                    document.getElementById('gameContainer').style.display = 'block';
-                }
-            });
+// ---------------------------
+// Main draw loop
+// ---------------------------
 
-            // Receive physics updates from server
-            socket.on('physicsUpdate', (bodiesData) => {
-                bodies = {};
-                bodiesData.forEach(bodyData => {
-                    bodies[bodyData.id] = bodyData;
-                });
-            });
+function draw() {
+  background(15);
 
-            // Receive notification of new body
-            socket.on('bodySpawned', (bodyData) => {
-                bodies[bodyData.id] = bodyData;
-                console.log('Body spawned:', bodyData);
-            });
+  drawConnectionStatusBar();
 
-            // Receive notification that all bodies were cleared
-            socket.on('bodiesCleared', () => {
-                bodies = {};
-                console.log('All bodies cleared');
-            });
-        }
+  if (uiMode === 'lobby') {
+    drawLobbyUI();
+  } else if (uiMode === 'match') {
+    drawMatchUI();
+  }
 
-        function draw() {
-            // Background
-            background(20, 25, 40);
+  drawFooterInstructions();
+}
 
-            // Draw subtle grid
-            stroke(40, 45, 60);
-            strokeWeight(1);
-            for (let x = 0; x < width; x += 50) {
-                line(x, 0, x, height);
-            }
-            for (let y = 0; y < height; y += 50) {
-                line(0, y, width, y);
-            }
+function drawConnectionStatusBar() {
+  // Simple status indicator at top
+  const h = 32;
+  noStroke();
+  fill(20);
+  rect(0, 0, width, h);
 
-            // Draw all physics bodies using p5.js
-            push();
-            Object.values(bodies).forEach(body => {
-                push();
-                translate(body.x, body.y);
-                rotate(body.angle);
+  let statusText = 'Connecting...';
+  let statusColor = color(255, 215, 0);
 
-                // Set color from server
-                fill(body.color);
-                stroke(255, 255, 255, 100);
-                strokeWeight(2);
+  if (connectionStatus === 'connected') {
+    statusText = 'Connected';
+    statusColor = color(0, 255, 0);
+  } else if (connectionStatus === 'disconnected') {
+    statusText = 'Disconnected (trying to reconnect)';
+    statusColor = color(255, 80, 80);
+  }
 
-                // Draw based on type
-                if (body.type === 'circle') {
-                    ellipse(0, 0, body.radius * 2, body.radius * 2);
-                } else if (body.type === 'box') {
-                    rectMode(CENTER);
-                    rect(0, 0, body.width, body.height);
-                }
+  fill(statusColor);
+  textSize(14);
+  textAlign(LEFT, CENTER);
+  text(statusText, 16, h / 2);
 
-                pop();
+  // Show player name on the right
+  fill(200);
+  textAlign(RIGHT, CENTER);
+  text(
+    myPlayer.name ? `You: ${myPlayer.name}` : 'You: (unnamed)',
+    width - 16,
+    h / 2
+  );
+}
 
-                // Draw velocity vector (optional - shows physics)
-                stroke(255, 255, 0, 150);
-                strokeWeight(2);
-                line(body.x, body.y, body.x + body.vx * 2, body.y + body.vy * 2);
-            });
-            pop();
+function drawLobbyUI() {
+  const padding = 24;
+  const topOffset = 40;
 
-            // Draw stats
-            noStroke();
-            fill(255, 255, 255, 200);
-            textAlign(LEFT, TOP);
-            textSize(14);
-            text(`Bodies: ${Object.keys(bodies).length}`, 10, 10);
-            text(`FPS: ${Math.round(frameRate())}`, 10, 30);
-            text(`Mode: ${mode}`, 10, 50);
+  // Title
+  textAlign(LEFT, TOP);
+  textSize(28);
+  fill(240);
+  text("Rock-Paper-Scissors Coliseum", padding, topOffset);
 
-            // Draw explosion preview in explode mode
-            if (mode === 'explode' && mouseX >= 0 && mouseX <= width && mouseY >= 0 && mouseY <= height) {
-                noFill();
-                stroke(255, 100, 100, 100);
-                strokeWeight(3);
-                ellipse(mouseX, mouseY, 200, 200);
-            }
-        }
+  textSize(14);
+  fill(200);
+  text("Waiting in lobby… You'll be auto-matched into 1v1 games.", padding, topOffset + 40);
 
-        // Handle mouse clicks
-        function mousePressed() {
-            if (mouseX >= 0 && mouseX <= width && mouseY >= 0 && mouseY <= height) {
-                if (mode === 'circle') {
-                    socket.emit('spawnCircle', { x: mouseX, y: mouseY });
-                } else if (mode === 'box') {
-                    socket.emit('spawnBox', { x: mouseX, y: mouseY });
-                } else if (mode === 'explode') {
-                    socket.emit('explode', { x: mouseX, y: mouseY, radius: 100, power: 5 });  // Changed from 0.05
-                }
-            }
-        }
+  // Global stats
+  const statsY = topOffset + 70;
+  fill(180);
+  text(
+    `Total matches played: ${lobbyState.globalStats.totalMatchesPlayed || 0}\n` +
+    `Total rounds played: ${lobbyState.globalStats.totalRoundsPlayed || 0}`,
+    padding,
+    statsY
+  );
 
-        // Button handlers
-        document.getElementById('circleBtn').addEventListener('click', () => {
-            mode = 'circle';
-            document.getElementById('currentMode').textContent = 'Circle';
-        });
+  // Spectator list
+  const listY = statsY + 60;
+  fill(220);
+  textSize(18);
+  text("Gladiators in Lobby", padding, listY);
 
-        document.getElementById('boxBtn').addEventListener('click', () => {
-            mode = 'box';
-            document.getElementById('currentMode').textContent = 'Box';
-        });
+  const lineHeight = 20;
+  textSize(14);
+  let y = listY + 28;
+  lobbyState.spectators.forEach((p, i) => {
+    const label = `${p.name}  (W: ${p.totalWins || 0}, L: ${p.totalLosses || 0})`;
+    fill(180);
+    text(label, padding, y + i * lineHeight);
+  });
 
-        document.getElementById('explodeBtn').addEventListener('click', () => {
-            mode = 'explode';
-            document.getElementById('currentMode').textContent = 'Explode';
-        });
+  // Active matches on the right
+  const matchesX = width * 0.5;
+  fill(220);
+  textSize(18);
+  text("Active Matches", matchesX, listY);
 
-        document.getElementById('clearBtn').addEventListener('click', () => {
-            socket.emit('clearBodies');
-        });
-    </script>
+  y = listY + 28;
+  lobbyState.activeMatches.forEach((m, i) => {
+    const pA = m.players[0]?.name || "Player A";
+    const pB = m.players[1]?.name || "Player B";
+    const sA = m.scores[m.players[0]?.id] || 0;
+    const sB = m.scores[m.players[1]?.id] || 0;
+    fill(200);
+    text(
+      `${pA} (${sA}) vs ${pB} (${sB})`,
+      matchesX,
+      y + i * lineHeight
+    );
+  });
+}
+
+function drawMatchUI() {
+  if (!currentMatch) {
+    // If somehow we have no match but are in match mode, fallback
+    uiMode = 'lobby';
+    return;
+  }
+
+  const topOffset = 40;
+  const padding = 24;
+
+  // Title
+  textAlign(CENTER, TOP);
+  textSize(24);
+  fill(240);
+  text(`MATCH #${currentMatch.matchId.slice(-6)}`, width / 2, topOffset);
+
+  // Players and scoreboard
+  const [pA, pB] = currentMatch.players;
+  const scoreA = currentMatch.scores[pA?.id] || 0;
+  const scoreB = currentMatch.scores[pB?.id] || 0;
+
+  const myId = socket ? socket.id : null;
+  const isPlayerA = myId && pA && pA.id === myId;
+  const isPlayerB = myId && pB && pB.id === myId;
+
+  const nameA = pA ? pA.name : "Player A";
+  const nameB = pB ? pB.name : "Player B";
+
+  // Names
+  textSize(16);
+  textAlign(CENTER, TOP);
+  fill(200);
+  text(
+    `${nameA}  (Score: ${scoreA})`,
+    width * 0.25,
+    topOffset + 40
+  );
+  text(
+    `${nameB}  (Score: ${scoreB})`,
+    width * 0.75,
+    topOffset + 40
+  );
+
+  // Highlight "You"
+  textSize(14);
+  if (isPlayerA) {
+    fill(120, 255, 120);
+    text("(You)", width * 0.25, topOffset + 60);
+  }
+  if (isPlayerB) {
+    fill(120, 255, 120);
+    text("(You)", width * 0.75, topOffset + 60);
+  }
+
+  // Round info
+  textAlign(CENTER, TOP);
+  textSize(18);
+  fill(220);
+  text(`Round ${currentMatch.round}`, width / 2, topOffset + 90);
+
+  // Turn + timer bar
+  drawTurnTimerBar();
+
+  // R/P/S buttons for your input
+  drawRPSButtons();
+
+  // Last round result panel (moves + win/lose)
+  drawRoundResultPanel();
+}
+
+function drawTurnTimerBar() {
+  const barWidth = width * 0.6;
+  const barHeight = 16;
+  const x = (width - barWidth) / 2;
+  const y = 140;
+
+  const now = Date.now();
+  const remaining = max(0, turnInfo.expiresAt - now);
+  const progress = constrain(remaining / 10000, 0, 1);
+
+  noStroke();
+  fill(40);
+  rect(x, y, barWidth, barHeight, 8);
+
+  if (progress > 0) {
+    fill(120, 200, 255);
+    rect(x, y, barWidth * progress, barHeight, 8);
+  }
+
+  // Text: who is acting + seconds remaining
+  const holderId = turnInfo.holderId;
+  const currentPlayer = currentMatch.players.find(p => p.id === holderId);
+  const holderName = currentPlayer ? currentPlayer.name : 'Unknown';
+
+  textAlign(CENTER, CENTER);
+  textSize(12);
+  fill(220);
+  const seconds = (remaining / 1000).toFixed(1);
+  text(
+    `Turn: ${holderName}   •   Time left: ${seconds}s`,
+    width / 2,
+    y + barHeight + 14
+  );
+}
+
+function drawRPSButtons() {
+  const baseY = height - 160;
+  const totalWidth = width * 0.6;
+  const buttonWidth = totalWidth / 3 - 16;
+  const buttonHeight = 80;
+  const startX = (width - totalWidth) / 2;
+
+  const labels = ['Rock', 'Paper', 'Scissors'];
+  const moves = ['rock', 'paper', 'scissors'];
+
+  rpsButtons = [];
+
+  for (let i = 0; i < 3; i++) {
+    const x = startX + i * (buttonWidth + 16);
+    const y = baseY;
+    rpsButtons.push({ x, y, w: buttonWidth, h: buttonHeight, move: moves[i] });
+
+    const hover =
+      mouseX >= x && mouseX <= x + buttonWidth &&
+      mouseY >= y && mouseY <= y + buttonHeight;
+
+    // Style: slightly glow if hover
+    noStroke();
+    fill(hover ? 70 : 45);
+    rect(x, y, buttonWidth, buttonHeight, 10);
+
+    // Label
+    textAlign(CENTER, CENTER);
+    textSize(18);
+    fill(230);
+    text(labels[i], x + buttonWidth / 2, y + buttonHeight / 2);
+  }
+
+  // Info text
+  textAlign(CENTER, TOP);
+  textSize(14);
+  fill(190);
+  text("Click one of the choices to lock in your move.", width / 2, baseY - 24);
+}
+
+function drawRoundResultPanel() {
+  const panelWidth = width * 0.6;
+  const panelHeight = 120;
+  const x = (width - panelWidth) / 2;
+  const y = 220;
+
+  noStroke();
+  fill(25);
+  rect(x, y, panelWidth, panelHeight, 12);
+
+  textAlign(LEFT, TOP);
+  textSize(16);
+  fill(230);
+  text("Last Round", x + 16, y + 10);
+
+  textSize(13);
+  if (!lastRoundResult) {
+    fill(180);
+    text("No rounds resolved yet. Your move will be revealed once both players choose.", x + 16, y + 40);
+    return;
+  }
+
+  const { winnerId, reason, revealedMoves } = lastRoundResult;
+
+  let reasonText = '';
+  if (reason === 'moves') reasonText = 'Normal resolution';
+  else if (reason === 'timeout') reasonText = 'Timeout: inactive player lost';
+  else if (reason === 'disconnect') reasonText = 'Opponent disconnected';
+  else if (reason === 'forfeit') reasonText = 'Someone forfeited';
+
+  const myId = socket ? socket.id : null;
+  let outcome = 'Tie';
+  if (winnerId && myId) {
+    if (winnerId === myId) outcome = 'You won!';
+    else outcome = 'You lost!';
+  }
+
+  fill(200);
+  text(`Outcome: ${outcome}`, x + 16, y + 40);
+  text(`Reason: ${reasonText}`, x + 16, y + 60);
+
+  if (revealedMoves) {
+    const movesText = Object.entries(revealedMoves)
+      .map(([pid, move]) => {
+        const p = currentMatch.players.find(pl => pl.id === pid);
+        const name = p ? p.name : 'Unknown';
+        return `${name}: ${move || 'no move'}`;
+      })
+      .join("   •   ");
+
+    text(`Moves: ${movesText}`, x + 16, y + 80);
+  }
+}
+
+function drawFooterInstructions() {
+  const footerY = height - 28;
+  noStroke();
+  fill(20);
+  rect(0, footerY, width, 28);
+
+  textAlign(CENTER, CENTER);
+  textSize(12);
+  fill(180);
+  if (uiMode === 'lobby') {
+    text("Lobby: you will automatically be paired into 1v1 matches as other players join.", width / 2, footerY + 14);
+  } else if (uiMode === 'match') {
+    text("Match: click Rock / Paper / Scissors to make your choice. Press 'L' to forfeit and leave the match.", width / 2, footerY + 14);
+  }
+}
+
+// ---------------------------
+// Input handling
+// ---------------------------
+
+function mousePressed() {
+  if (uiMode === 'match') {
+    handleRPSClick();
+  }
+}
+
+function handleRPSClick() {
+  if (!currentMatch || !socket || !socket.connected) return;
+
+  const myId = socket.id;
+  const isMyTurn = (turnInfo.holderId === myId);
+  if (!isMyTurn) {
+    // Not your turn; ignore click
+    return;
+  }
+
+  if (hasSubmittedMoveThisRound) {
+    return; // Already submitted a move this round
+  }
+
+  for (const btn of rpsButtons) {
+    if (
+      mouseX >= btn.x && mouseX <= btn.x + btn.w &&
+      mouseY >= btn.y && mouseY <= btn.y + btn.h
+    ) {
+      // Emit playerMove with timestamp
+      socket.emit('playerMove', {
+        matchId: currentMatch.matchId,
+        move: btn.move,
+        timestamp: Date.now()
+      });
+      hasSubmittedMoveThisRound = true;
+      break;
+    }
+  }
+}
+
+function keyPressed() {
+  if (!socket || !socket.connected) return;
+
+  if (key === 'l' || key === 'L') {
+    // Leave match / forfeit
+    socket.emit('leaveMatch', {
+      timestamp: Date.now()
+    });
+    // Locally, we go back to lobby view; server will also requeue us
+    currentMatch = null;
+    lastRoundResult = null;
+    uiMode = 'lobby';
+  }
+}
+</script>
 </body>
 </html>
