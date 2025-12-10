@@ -1,7 +1,7 @@
 <!-- index.html -->
 <!--
   Rock-Paper-Scissors Coliseum
-  Client built with p5.js + socket.io
+  Client built with p5.js + p5.sound + socket.io
   - Open multiple tabs to test multiplayer.
   - Click the Rock / Paper / Scissors buttons during a match.
   - Press 'L' to leave (forfeit) a match.
@@ -15,6 +15,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <!-- p5.js -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
+  <!-- p5.sound for audio -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/addons/p5.sound.min.js"></script>
   <!-- socket.io client from the server -->
   <script src="/socket.io/socket.io.js"></script>
   <style>
@@ -33,6 +35,30 @@
 </head>
 <body>
 <script>
+// ---------------------------
+// Asset variables
+// ---------------------------
+
+let imgRock, imgPaper, imgScissors;
+let sfxWin, sfxLose, sfxTie, sfxMatchStart, sfxAmbient;
+let audioStarted = false;
+
+// p5 preload: load images and sounds
+function preload() {
+  // Images
+  imgRock = loadImage('IMM270_Rock.gif');
+  imgPaper = loadImage('IMM270_Paper.gif');
+  imgScissors = loadImage('IMM270_Scissors.gif');
+
+  // Audio
+  soundFormats('mp3', 'wav');
+  sfxWin = loadSound('IMM270_Win_Sound.mp3');
+  sfxLose = loadSound('IMM270_Lose_Sound.wav');
+  sfxTie = loadSound('IMM270_Tie_Sound.wav');
+  sfxMatchStart = loadSound('IMM270_MatchStart_Sound.wav');
+  sfxAmbient = loadSound('IMM270_spectator-and-background_Sound.wav');
+}
+
 // ---------------------------
 // Client-side global state
 // ---------------------------
@@ -146,6 +172,11 @@ function initSocket() {
     };
     hasSubmittedMoveThisRound = false;
     lastRoundResult = null;
+
+    // Play match-start sound
+    if (sfxMatchStart && sfxMatchStart.isLoaded()) {
+      sfxMatchStart.play();
+    }
   });
 
   // Turn / countdown info
@@ -171,13 +202,23 @@ function initSocket() {
       scores: data.scores
     };
     hasSubmittedMoveThisRound = false;
+
+    // Play win/lose/tie sound
+    const myId = socket ? socket.id : null;
+    if (!data.winnerId) {
+      if (sfxTie && sfxTie.isLoaded()) sfxTie.play();
+    } else if (myId && data.winnerId === myId) {
+      if (sfxWin && sfxWin.isLoaded()) sfxWin.play();
+    } else {
+      if (sfxLose && sfxLose.isLoaded()) sfxLose.play();
+    }
   });
 
   // Match end screen
   socket.on('game_end', data => {
     if (!data) return;
     // Server will requeue you and send new lobby/match updates.
-    // You could optionally set uiMode = 'lobby' here.
+    // You could optionally set uiMode = 'lobby' here if you want a breather.
   });
 }
 
@@ -426,28 +467,45 @@ function drawRPSButtons() {
       mouseX >= x && mouseX <= x + buttonWidth &&
       mouseY >= y && mouseY <= y + buttonHeight;
 
-    // Style: slightly glow if hover
+    // Button background
     noStroke();
     fill(hover ? 70 : 45);
     rect(x, y, buttonWidth, buttonHeight, 10);
 
+    // Icon image
+    let img = null;
+    if (moves[i] === 'rock') img = imgRock;
+    else if (moves[i] === 'paper') img = imgPaper;
+    else if (moves[i] === 'scissors') img = imgScissors;
+
+    if (img) {
+      const iconSize = min(buttonWidth - 10, buttonHeight - 10);
+      image(
+        img,
+        x + (buttonWidth - iconSize) / 2,
+        y + (buttonHeight - iconSize) / 2,
+        iconSize,
+        iconSize
+      );
+    }
+
     // Label
-    textAlign(CENTER, CENTER);
-    textSize(18);
+    textAlign(CENTER, BOTTOM);
+    textSize(14);
     fill(230);
-    text(labels[i], x + buttonWidth / 2, y + buttonHeight / 2);
+    text(labels[i], x + buttonWidth / 2, y - 4);
   }
 
   // Info text
   textAlign(CENTER, TOP);
   textSize(14);
   fill(190);
-  text("Both players choose one move before the timer ends.", width / 2, baseY - 24);
+  text("Both players choose one move before the timer ends.", width / 2, baseY - 36);
 }
 
 function drawRoundResultPanel() {
   const panelWidth = width * 0.6;
-  const panelHeight = 120;
+  const panelHeight = 140;
   const x = (width - panelWidth) / 2;
   const y = 220;
 
@@ -486,16 +544,46 @@ function drawRoundResultPanel() {
   text(`Outcome: ${outcome}`, x + 16, y + 40);
   text(`Reason: ${reasonText}`, x + 16, y + 60);
 
+  // Show move icons for each player
   if (revealedMoves) {
-    const movesText = Object.entries(revealedMoves)
-      .map(([pid, move]) => {
-        const p = currentMatch.players.find(pl => pl.id === pid);
-        const name = p ? p.name : 'Unknown';
-        return `${name}: ${move || 'no move'}`;
-      })
-      .join("   •   ");
+    const [pA, pB] = currentMatch.players;
+    const moveA = revealedMoves[pA?.id];
+    const moveB = revealedMoves[pB?.id];
 
-    text(`Moves: ${movesText}`, x + 16, y + 80);
+    const iconSize = 48;
+    const midY = y + 100;
+    const leftX = x + panelWidth * 0.25 - iconSize / 2;
+    const rightX = x + panelWidth * 0.75 - iconSize / 2;
+
+    // Helper
+    function imgForMove(m) {
+      if (m === 'rock') return imgRock;
+      if (m === 'paper') return imgPaper;
+      if (m === 'scissors') return imgScissors;
+      return null;
+    }
+
+    // Player A
+    if (pA) {
+      const imgA = imgForMove(moveA);
+      if (imgA) {
+        image(imgA, leftX, midY - iconSize / 2, iconSize, iconSize);
+      }
+      textAlign(CENTER, TOP);
+      fill(200);
+      text(pA.name, x + panelWidth * 0.25, midY + iconSize / 2 + 4);
+    }
+
+    // Player B
+    if (pB) {
+      const imgB = imgForMove(moveB);
+      if (imgB) {
+        image(imgB, rightX, midY - iconSize / 2, iconSize, iconSize);
+      }
+      textAlign(CENTER, TOP);
+      fill(200);
+      text(pB.name, x + panelWidth * 0.75, midY + iconSize / 2 + 4);
+    }
   }
 }
 
@@ -519,7 +607,23 @@ function drawFooterInstructions() {
 // Input handling
 // ---------------------------
 
+function startAudioIfNeeded() {
+  if (!audioStarted) {
+    audioStarted = true;
+    // Required for some browsers to allow sound
+    userStartAudio();
+
+    // Start ambient crowd/background loop
+    if (sfxAmbient && sfxAmbient.isLoaded() && !sfxAmbient.isPlaying()) {
+      sfxAmbient.setLoop(true);
+      sfxAmbient.setVolume(0.35);
+      sfxAmbient.play();
+    }
+  }
+}
+
 function mousePressed() {
+  startAudioIfNeeded();
   if (uiMode === 'match') {
     handleRPSClick();
   }
@@ -552,6 +656,7 @@ function handleRPSClick() {
 }
 
 function keyPressed() {
+  startAudioIfNeeded();
   if (!socket || !socket.connected) return;
 
   if (key === 'l' || key === 'L') {
