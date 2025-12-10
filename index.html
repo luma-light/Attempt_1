@@ -38,7 +38,7 @@
 // ---------------------------
 
 let socket;
-let connectionStatus = 'connecting'; // 'connecting' | 'connected' | 'disconnected' | 'reconnecting'
+let connectionStatus = 'connecting'; // 'connecting' | 'connected' | 'disconnected'
 
 let myPlayer = {
   id: null,
@@ -176,9 +176,8 @@ function initSocket() {
   // Match end screen
   socket.on('game_end', data => {
     if (!data) return;
-    // We briefly stay in match view, then we'll be sent back to lobby via new lobbyState
-    // For now, we just keep currentMatch until lobbyState arrives. The server
-    // requeues us, so soon we will be in a new match.
+    // Server will requeue you and send new lobby/match updates.
+    // You could optionally set uiMode = 'lobby' here.
   });
 }
 
@@ -310,7 +309,6 @@ function drawMatchUI() {
   }
 
   const topOffset = 40;
-  const padding = 24;
 
   // Title
   textAlign(CENTER, TOP);
@@ -394,7 +392,7 @@ function drawTurnTimerBar() {
   // Text: who is acting + seconds remaining
   const holderId = turnInfo.holderId;
   const currentPlayer = currentMatch.players.find(p => p.id === holderId);
-  const holderName = currentPlayer ? currentPlayer.name : 'Unknown';
+  const holderName = currentPlayer ? currentPlayer.name : 'Both players';
 
   textAlign(CENTER, CENTER);
   textSize(12);
@@ -444,7 +442,7 @@ function drawRPSButtons() {
   textAlign(CENTER, TOP);
   textSize(14);
   fill(190);
-  text("Click one of the choices to lock in your move.", width / 2, baseY - 24);
+  text("Both players choose one move before the timer ends.", width / 2, baseY - 24);
 }
 
 function drawRoundResultPanel() {
@@ -513,7 +511,7 @@ function drawFooterInstructions() {
   if (uiMode === 'lobby') {
     text("Lobby: you will automatically be paired into 1v1 matches as other players join.", width / 2, footerY + 14);
   } else if (uiMode === 'match') {
-    text("Match: click Rock / Paper / Scissors to make your choice. Press 'L' to forfeit and leave the match.", width / 2, footerY + 14);
+    text("Match: both players click Rock / Paper / Scissors before the timer runs out. Press 'L' to forfeit and leave the match.", width / 2, footerY + 14);
   }
 }
 
@@ -530,16 +528,11 @@ function mousePressed() {
 function handleRPSClick() {
   if (!currentMatch || !socket || !socket.connected) return;
 
-  const myId = socket.id;
-  const isMyTurn = (turnInfo.holderId === myId);
-  if (!isMyTurn) {
-    // Not your turn; ignore click
-    return;
-  }
+  // Don't let the player spam multiple choices per round
+  if (hasSubmittedMoveThisRound) return;
 
-  if (hasSubmittedMoveThisRound) {
-    return; // Already submitted a move this round
-  }
+  // Do not allow moves after timer (prevents weirdness)
+  if (Date.now() > turnInfo.expiresAt) return;
 
   for (const btn of rpsButtons) {
     if (

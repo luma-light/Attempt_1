@@ -2,7 +2,7 @@
 // Centralized server for "Rock-Paper-Scissors Coliseum"
 // -----------------------------------------------------
 // How to run:
-// 1) npm install         (already set up for express + socket.io v2)
+// 1) npm install         (express + socket.io v2 already in package.json)
 // 2) node server.js
 // 3) Open http://localhost:3000 in multiple tabs to test
 
@@ -69,7 +69,7 @@ let globalStats = {
 const HEARTBEAT_TIMEOUT = 15000; // 15 seconds
 
 // Match config
-const ROUND_TIME_LIMIT = 10000; // 10 seconds per turn
+const ROUND_TIME_LIMIT = 10000; // 10 seconds per round
 const WINS_TO_TAKE_MATCH = 3;
 
 // -------------
@@ -143,7 +143,7 @@ function createMatch(playerIdA, playerIdB) {
     players: [playerIdA, playerIdB],
     scores: { [playerIdA]: 0, [playerIdB]: 0 },
     round: 1,
-    currentTurn: playerIdA, // arbitrary who starts
+    currentTurn: playerIdA, // tracked for UI highlight only
     turnDeadline: Date.now() + ROUND_TIME_LIMIT,
     moves: { [playerIdA]: null, [playerIdB]: null },
     status: 'active',
@@ -182,7 +182,7 @@ function createMatch(playerIdA, playerIdB) {
     serverTime: Date.now()
   });
 
-  // Emit initial turnUpdate
+  // Emit initial turnUpdate (used for the countdown bar)
   emitTurnUpdate(match);
 
   // Lobby changed (two players left)
@@ -193,7 +193,7 @@ function emitTurnUpdate(match) {
   io.to(match.roomId).emit('turnUpdate', {
     timestamp: Date.now(),
     matchId: match.id,
-    holderId: match.currentTurn,
+    holderId: match.currentTurn, // purely cosmetic now
     expiresAt: match.turnDeadline
   });
 }
@@ -258,6 +258,7 @@ function resolveRound(match, reason) {
     match.round += 1;
     match.moves[idA] = null;
     match.moves[idB] = null;
+    // Alternate who is "currentTurn" just for the UI highlight
     match.currentTurn = idA === match.currentTurn ? idB : idA;
     match.turnDeadline = Date.now() + ROUND_TIME_LIMIT;
     emitTurnUpdate(match);
@@ -375,6 +376,33 @@ setInterval(() => {
   }
 }, 5000);
 
+// ------------------------------
+// Round timeout checker
+// ------------------------------
+// If the timer expires and at least one player has chosen,
+// we resolve the round as a timeout so the game keeps flowing.
+
+setInterval(() => {
+  const now = Date.now();
+  Object.values(matches).forEach(match => {
+    if (!match || match.status !== 'active') return;
+    if (now < match.turnDeadline) return;
+
+    const [idA, idB] = match.players;
+    const moveA = match.moves[idA];
+    const moveB = match.moves[idB];
+
+    // If at least one move was made, resolve as timeout
+    if (moveA || moveB) {
+      resolveRound(match, 'timeout');
+    } else {
+      // Nobody moved; extend deadline and re-emit turnUpdate
+      match.turnDeadline = Date.now() + ROUND_TIME_LIMIT;
+      emitTurnUpdate(match);
+    }
+  });
+}, 500);
+
 // ----------------------
 // Socket.io event wiring
 // ----------------------
@@ -446,10 +474,15 @@ io.on('connection', socket => {
 
     // Validation
     if (!match.players.includes(socket.id)) return;
-    if (match.currentTurn !== socket.id) return;
     if (!['rock', 'paper', 'scissors'].includes(move)) return;
+    if (Date.now() > match.turnDeadline) {
+      // Too late for this round
+      return;
+    }
 
+    // Record move (BOTH players are allowed to submit each round)
     match.moves[socket.id] = move;
+    console.log(`Move from ${socket.id} in match ${matchId}: ${move}`);
 
     // If both moves are non-null, resolve the round
     const [idA, idB] = match.players;
