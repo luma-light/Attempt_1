@@ -1,26 +1,20 @@
 // server.js
-// Centralized server for "Rock-Paper-Scissors Coliseum"
-// -----------------------------------------------------
-// How to run:
-// 1) npm install         (express + socket.io v2 already in package.json)
-// 2) node server.js
-// 3) Open http://localhost:3000 in multiple tabs to test
+// Rock-Paper-Scissors Coliseum server
 
 const express = require('express');
 const http = require('http');
-const socketIO = require('socket.io'); // v2 style require
+const socketIO = require('socket.io');
 
 const PORT = process.env.PORT || 3000;
 
 const app = express();
 const server = http.createServer(app);
-const io = socketIO(server); // v2 style initialization
+const io = socketIO(server);
 
-// Serve index.html and other static assets from this directory
 app.use(express.static(__dirname));
 
 // ----------------------
-// Core server data model
+// Core data model
 // ----------------------
 
 // All connected players keyed by socket.id
@@ -32,8 +26,9 @@ players[socketId] = {
   preferredColor: '#ff00ff',
   role: 'spectator' | 'player',
   roomId: 'lobby' | `match:${matchId}`,
-  matchId: null | matchId,        // match they are actively playing in
-  spectatingMatchId: null | matchId, // match they are currently spectating
+  matchId: null | matchId,          // match they are *playing* in
+  spectatingMatchId: null | matchId, // match they are spectating
+  bestOf: 3,                         // preferred best-of setting (3/5/7)
   totalWins: 0,
   totalLosses: 0,
   timeLastHeartbeat: 0
@@ -53,36 +48,58 @@ matches[matchId] = {
   moves: { [socketIdA]: null, [socketIdB]: null },
   status: 'active' | 'finished',
   roomId: `match:${matchId}`,
-  rematchVotes: { [socketIdA]: false, [socketIdB]: false }
+  rematchVotes: { [socketIdA]: false, [socketIdB]: false },
+  bestOf: 3,
+  winsToTakeMatch: 2
 };
 */
 
 // Ordered list of socketIds ready to play
 let waitingQueue = [];
 
-// Global stats for fun display / debugging
+// Global stats
 let globalStats = {
   totalMatchesPlayed: 0,
   totalRoundsPlayed: 0
 };
 
-// Heartbeat / AFK timeout in ms
-const HEARTBEAT_TIMEOUT = 15000; // 15 seconds
-
-// Match config
-const ROUND_TIME_LIMIT = 30000; // 30 seconds per round (was 10s)
-const WINS_TO_TAKE_MATCH = 3;
+// Config
+const HEARTBEAT_TIMEOUT = 15000; // 15s
+const ROUND_TIME_LIMIT = 30000;  // 30s per round
+const DEFAULT_BEST_OF = 3;
+const ALLOWED_BEST_OF = [3, 5, 7];
 
 // -------------
-// Helper utils
+// Helpers
 // -------------
 
 function safeGetPlayer(id) {
   return players[id] || null;
 }
 
+function getSocketById(id) {
+  if (io.sockets && io.sockets.sockets && io.sockets.sockets[id]) {
+    return io.sockets.sockets[id];
+  }
+  if (io.sockets && io.sockets.connected && io.sockets.connected[id]) {
+    return io.sockets.connected[id];
+  }
+  return null;
+}
+
+function removeFromWaitingQueue(id) {
+  waitingQueue = waitingQueue.filter(pid => pid !== id);
+}
+
+function rpsWinner(moveA, moveB) {
+  if (moveA === moveB) return 'tie';
+  if (moveA === 'rock' && moveB === 'scissors') return 'A';
+  if (moveA === 'paper' && moveB === 'rock') return 'A';
+  if (moveA === 'scissors' && moveB === 'paper') return 'A';
+  return 'B';
+}
+
 function broadcastLobbyState() {
-  // Build spectators + active matches snapshot
   const spectators = Object.values(players)
     .filter(p => p.role === 'spectator')
     .map(p => ({
@@ -96,6 +113,7 @@ function broadcastLobbyState() {
     .filter(m => m.status === 'active')
     .map(m => ({
       matchId: m.id,
+      bestOf: m.bestOf,
       players: m.players.map(pid => {
         const p = safeGetPlayer(pid);
         return p
@@ -113,34 +131,24 @@ function broadcastLobbyState() {
   });
 }
 
-// Decide the RPS result from perspective of playerA vs playerB
-function rpsWinner(moveA, moveB) {
-  if (moveA === moveB) return 'tie';
-  if (moveA === 'rock' && moveB === 'scissors') return 'A';
-  if (moveA === 'paper' && moveB === 'rock') return 'A';
-  if (moveA === 'scissors' && moveB === 'paper') return 'A';
-  return 'B';
-}
+// ----------------------
+// Match lifecycle
+// ----------------------
 
-// Helper to look up a socket.id in Socket.IO v2
-function getSocketById(id) {
-  // In v2, sockets are stored as an object: io.sockets.sockets or io.sockets.connected
-  if (io.sockets && io.sockets.sockets && io.sockets.sockets[id]) {
-    return io.sockets.sockets[id];
-  }
-  if (io.sockets && io.sockets.connected && io.sockets.connected[id]) {
-    return io.sockets.connected[id];
-  }
-  return null;
-}
-
-// Remove player from waitingQueue helper
-function removeFromWaitingQueue(id) {
-  waitingQueue = waitingQueue.filter(pid => pid !== id);
-}
-
-// Create a new match from two player IDs
 function createMatch(playerIdA, playerIdB) {
+  const pA = safeGetPlayer(playerIdA);
+  const pB = safeGetPlayer(playerIdB);
+
+  const bestOfRaw = Math.max(
+    (pA && pA.bestOf) || DEFAULT_BEST_OF,
+    (pB && pB.bestOf) || DEFAULT_BEST_OF
+  );
+  const bestOf = ALLOWED_BEST_OF.includes(bestOfRaw)
+    ? bestOfRaw
+    : DEFAULT_BEST_OF;
+
+  const winsNeeded = Math.ceil(bestOf / 2);
+
   const matchId = `${playerIdA}_${playerIdB}_${Date.now()}`;
   const roomId = `match:${matchId}`;
 
@@ -149,12 +157,14 @@ function createMatch(playerIdA, playerIdB) {
     players: [playerIdA, playerIdB],
     scores: { [playerIdA]: 0, [playerIdB]: 0 },
     round: 1,
-    currentTurn: playerIdA, // tracked for UI highlight only
+    currentTurn: playerIdA,
     turnDeadline: Date.now() + ROUND_TIME_LIMIT,
     moves: { [playerIdA]: null, [playerIdB]: null },
     status: 'active',
     roomId,
-    rematchVotes: { [playerIdA]: false, [playerIdB]: false }
+    rematchVotes: { [playerIdA]: false, [playerIdB]: false },
+    bestOf,
+    winsToTakeMatch: winsNeeded
   };
 
   matches[matchId] = match;
@@ -162,20 +172,16 @@ function createMatch(playerIdA, playerIdB) {
   // Move both players to the match room
   match.players.forEach(pid => {
     const p = safeGetPlayer(pid);
-    if (!p) return;
     const socket = getSocketById(pid);
-    if (!socket) return;
+    if (!p || !socket) return;
 
     // If they were spectating some match, leave that room first
     if (p.spectatingMatchId) {
       const oldMatch = matches[p.spectatingMatchId];
-      if (oldMatch) {
-        socket.leave(oldMatch.roomId);
-      }
+      if (oldMatch) socket.leave(oldMatch.roomId);
       p.spectatingMatchId = null;
     }
 
-    // Leave lobby room and join match room
     socket.leave('lobby');
     socket.join(roomId);
     p.roomId = roomId;
@@ -183,10 +189,10 @@ function createMatch(playerIdA, playerIdB) {
     p.role = 'player';
   });
 
-  // Emit match_start to the room
   io.to(roomId).emit('match_start', {
     timestamp: Date.now(),
     matchId,
+    bestOf,
     players: match.players.map(pid => {
       const p = safeGetPlayer(pid);
       return p ? { id: p.id, name: p.name } : { id: pid, name: 'Unknown' };
@@ -197,10 +203,7 @@ function createMatch(playerIdA, playerIdB) {
     serverTime: Date.now()
   });
 
-  // Emit initial turnUpdate (used for the countdown bar)
   emitTurnUpdate(match);
-
-  // Lobby changed (two players left)
   broadcastLobbyState();
 }
 
@@ -208,13 +211,12 @@ function emitTurnUpdate(match) {
   io.to(match.roomId).emit('turnUpdate', {
     timestamp: Date.now(),
     matchId: match.id,
-    holderId: match.currentTurn, // purely cosmetic now
+    holderId: match.currentTurn,
     expiresAt: match.turnDeadline,
     durationMs: ROUND_TIME_LIMIT
   });
 }
 
-// Called whenever both moves are present, or a timeout/forfeit occurs
 function resolveRound(match, reason) {
   if (!match || match.status !== 'active') return;
 
@@ -229,26 +231,20 @@ function resolveRound(match, reason) {
     const result = rpsWinner(moveA, moveB);
     if (result === 'A') winnerId = idA;
     else if (result === 'B') winnerId = idB;
-    else winnerId = null; // tie
   } else if (reason === 'timeout') {
-    // Whoever failed to choose loses
     if (moveA && !moveB) winnerId = idA;
     else if (!moveA && moveB) winnerId = idB;
-    else winnerId = null; // both failed? treat as tie
   } else if (reason === 'disconnect' || reason === 'forfeit') {
-    // One of the players left
     if (!safeGetPlayer(idA)) winnerId = idB;
     else if (!safeGetPlayer(idB)) winnerId = idA;
   }
 
-  // Update scores if there is a winner
   if (winnerId) {
     match.scores[winnerId] = (match.scores[winnerId] || 0) + 1;
   }
 
   globalStats.totalRoundsPlayed++;
 
-  // Reveal round result to match room
   io.to(match.roomId).emit('round_result', {
     timestamp: Date.now(),
     matchId: match.id,
@@ -262,19 +258,18 @@ function resolveRound(match, reason) {
     }
   });
 
-  // Win condition?
   const maxScore = Math.max(
     match.scores[idA] || 0,
     match.scores[idB] || 0
   );
-  if (maxScore >= WINS_TO_TAKE_MATCH || reason === 'disconnect' || reason === 'forfeit') {
+  const required = match.winsToTakeMatch || Math.ceil((match.bestOf || DEFAULT_BEST_OF) / 2);
+
+  if (maxScore >= required || reason === 'disconnect' || reason === 'forfeit') {
     endMatch(match, winnerId);
   } else {
-    // Next round
     match.round += 1;
     match.moves[idA] = null;
     match.moves[idB] = null;
-    // Alternate who is "currentTurn" just for the UI highlight
     match.currentTurn = idA === match.currentTurn ? idB : idA;
     match.turnDeadline = Date.now() + ROUND_TIME_LIMIT;
     emitTurnUpdate(match);
@@ -304,10 +299,10 @@ function endMatch(match, winnerId) {
     timestamp: Date.now(),
     matchId: match.id,
     winnerId,
-    finalScores: match.scores
+    finalScores: match.scores,
+    bestOf: match.bestOf
   });
 
-  // Send both players back to lobby and requeue them
   match.players.forEach(pid => {
     const socket = getSocketById(pid);
     const player = safeGetPlayer(pid);
@@ -317,9 +312,7 @@ function endMatch(match, winnerId) {
       player.roomId = 'lobby';
       player.matchId = null;
       player.role = 'spectator';
-      if (!waitingQueue.includes(pid)) {
-        waitingQueue.push(pid);
-      }
+      if (!waitingQueue.includes(pid)) waitingQueue.push(pid);
     }
   });
 
@@ -330,12 +323,10 @@ function endMatch(match, winnerId) {
 }
 
 function tryStartMatches() {
-  // While we have at least two people waiting, start a new match
   while (waitingQueue.length >= 2) {
     const playerIdA = waitingQueue.shift();
     const playerIdB = waitingQueue.shift();
 
-    // Basic sanity check
     const pA = safeGetPlayer(playerIdA);
     const pB = safeGetPlayer(playerIdB);
     if (!pA || !pB) continue;
@@ -344,7 +335,6 @@ function tryStartMatches() {
   }
 }
 
-// Handle player leaving a match (manual or disconnect)
 function handlePlayerLeaveMatch(socketId, reason) {
   const player = safeGetPlayer(socketId);
   if (!player || !player.matchId) return;
@@ -356,15 +346,12 @@ function handlePlayerLeaveMatch(socketId, reason) {
     return;
   }
 
-  // Mark their move as null if not set
   match.moves[socketId] = match.moves[socketId] || null;
-
-  // Resolve with forfeit / disconnect
   resolveRound(match, reason || 'disconnect');
 }
 
 // ----------------------
-// Heartbeat AFK cleaner
+// AFK cleanup & timeouts
 // ----------------------
 
 setInterval(() => {
@@ -373,26 +360,16 @@ setInterval(() => {
     if (now - p.timeLastHeartbeat > HEARTBEAT_TIMEOUT) {
       const socket = getSocketById(id);
       if (socket) {
-        // This will trigger the normal 'disconnect' handler
         socket.disconnect(true);
       } else {
-        // No socket; clean up manually
         removeFromWaitingQueue(id);
-        if (p.matchId) {
-          handlePlayerLeaveMatch(id, 'disconnect');
-        }
+        if (p.matchId) handlePlayerLeaveMatch(id, 'disconnect');
         p.spectatingMatchId = null;
         delete players[id];
       }
     }
   }
 }, 5000);
-
-// ------------------------------
-// Round timeout checker
-// ------------------------------
-// If the timer expires and at least one player has chosen,
-// we resolve the round as a timeout so the game keeps flowing.
 
 setInterval(() => {
   const now = Date.now();
@@ -404,11 +381,9 @@ setInterval(() => {
     const moveA = match.moves[idA];
     const moveB = match.moves[idB];
 
-    // If at least one move was made, resolve as timeout
     if (moveA || moveB) {
       resolveRound(match, 'timeout');
     } else {
-      // Nobody moved; extend deadline and re-emit turnUpdate
       match.turnDeadline = Date.now() + ROUND_TIME_LIMIT;
       emitTurnUpdate(match);
     }
@@ -416,13 +391,12 @@ setInterval(() => {
 }, 500);
 
 // ----------------------
-// Socket.io event wiring
+// Socket.io events
 // ----------------------
 
 io.on('connection', socket => {
   console.log('Client connected:', socket.id);
 
-  // Initialize a very barebones player record; upgraded on joinLobby
   players[socket.id] = {
     id: socket.id,
     name: 'Anonymous',
@@ -431,6 +405,7 @@ io.on('connection', socket => {
     roomId: 'lobby',
     matchId: null,
     spectatingMatchId: null,
+    bestOf: DEFAULT_BEST_OF,
     totalWins: 0,
     totalLosses: 0,
     timeLastHeartbeat: Date.now()
@@ -439,8 +414,6 @@ io.on('connection', socket => {
   socket.join('lobby');
   broadcastLobbyState();
 
-  // Client wants to enter lobby with a name/color
-  // joinQueue flag controls whether they enter the matchmaking queue.
   socket.on('joinLobby', data => {
     const now = Date.now();
     const player = safeGetPlayer(socket.id);
@@ -448,6 +421,7 @@ io.on('connection', socket => {
 
     const name = (data && data.name) ? String(data.name).slice(0, 20) : 'Anonymous';
     const preferredColor = (data && data.preferredColor) || '#ff00ff';
+    const joinQueue = !!(data && data.joinQueue);
 
     player.name = name;
     player.preferredColor = preferredColor;
@@ -456,39 +430,40 @@ io.on('connection', socket => {
     player.matchId = null;
     player.timeLastHeartbeat = now;
 
-    if (data && data.joinQueue) {
-      if (!waitingQueue.includes(socket.id)) {
-        waitingQueue.push(socket.id);
-      }
+    if (joinQueue) {
+      if (!waitingQueue.includes(socket.id)) waitingQueue.push(socket.id);
     } else {
       removeFromWaitingQueue(socket.id);
     }
 
-    console.log(`Player ${player.id} joined lobby as "${player.name}" (inQueue=${!!(data && data.joinQueue)})`);
-
+    console.log(`Player ${player.id} joined lobby as "${player.name}" (inQueue=${joinQueue})`);
     broadcastLobbyState();
     tryStartMatches();
   });
 
-  // Toggle queue membership explicitly
   socket.on('setQueueStatus', data => {
     const player = safeGetPlayer(socket.id);
     if (!player) return;
     const inQueue = !!(data && data.inQueue);
-
     if (inQueue) {
-      if (!waitingQueue.includes(socket.id)) {
-        waitingQueue.push(socket.id);
-      }
+      if (!waitingQueue.includes(socket.id)) waitingQueue.push(socket.id);
     } else {
       removeFromWaitingQueue(socket.id);
     }
-
     broadcastLobbyState();
     tryStartMatches();
   });
 
-  // Spectate a given match (spectators see chat and rounds but cannot play)
+  // Player sets preferred best-of (3/5/7)
+  socket.on('setBestOf', data => {
+    const player = safeGetPlayer(socket.id);
+    if (!player) return;
+    let n = data && data.bestOf;
+    n = parseInt(n, 10);
+    if (!ALLOWED_BEST_OF.includes(n)) return;
+    player.bestOf = n;
+  });
+
   socket.on('spectateMatch', data => {
     const player = safeGetPlayer(socket.id);
     if (!player || !data) return;
@@ -496,21 +471,18 @@ io.on('connection', socket => {
     const match = matches[matchId];
     if (!match || match.status !== 'active') return;
 
-    // Leave any previous spectated match
     if (player.spectatingMatchId && player.spectatingMatchId !== matchId) {
       const oldMatch = matches[player.spectatingMatchId];
-      if (oldMatch) {
-        socket.leave(oldMatch.roomId);
-      }
+      if (oldMatch) socket.leave(oldMatch.roomId);
     }
 
     socket.join(match.roomId);
     player.spectatingMatchId = matchId;
 
-    // Send a snapshot of current match state to this spectator
     socket.emit('match_snapshot', {
       timestamp: Date.now(),
       matchId: match.id,
+      bestOf: match.bestOf,
       players: match.players.map(pid => {
         const p = safeGetPlayer(pid);
         return p ? { id: p.id, name: p.name } : { id: pid, name: 'Unknown' };
@@ -525,57 +497,43 @@ io.on('connection', socket => {
     });
   });
 
-  // Leave spectating a match and return to lobby view
   socket.on('leaveSpectate', () => {
     const player = safeGetPlayer(socket.id);
     if (!player || !player.spectatingMatchId) return;
     const match = matches[player.spectatingMatchId];
-    if (match) {
-      socket.leave(match.roomId);
-    }
+    if (match) socket.leave(match.roomId);
     player.spectatingMatchId = null;
   });
 
-  // Heartbeat to detect AFK / dead sockets
   socket.on('heartbeat', data => {
     const player = safeGetPlayer(socket.id);
     if (!player) return;
     player.timeLastHeartbeat = data && data.timestamp ? data.timestamp : Date.now();
   });
 
-  // Player chooses R/P/S
   socket.on('playerMove', data => {
     const player = safeGetPlayer(socket.id);
-    if (!player) return;
-    if (!data) return;
+    if (!player || !data) return;
 
     const matchId = data.matchId;
     const move = data.move;
-
     const match = matches[matchId];
-    if (!match || match.status !== 'active') return;
 
-    // Validation
+    if (!match || match.status !== 'active') return;
     if (!match.players.includes(socket.id)) return;
     if (!['rock', 'paper', 'scissors'].includes(move)) return;
-    if (Date.now() > match.turnDeadline) {
-      // Too late for this round
-      return;
-    }
+    if (Date.now() > match.turnDeadline) return;
 
-    // Record move (BOTH players are allowed to submit each round)
     match.moves[socket.id] = move;
     console.log(`Move from ${socket.id} in match ${matchId}: ${move}`);
 
-    // If both moves are non-null, resolve the round
     const [idA, idB] = match.players;
     if (match.moves[idA] && match.moves[idB]) {
       resolveRound(match, 'moves');
     }
   });
 
-  // Match-local chat: only active players can send;
-  // everyone in the match room (players + spectators) sees the message.
+  // Match chat (only players can send; spectators read)
   socket.on('chatMessage', data => {
     const player = safeGetPlayer(socket.id);
     if (!player || !data) return;
@@ -583,15 +541,12 @@ io.on('connection', socket => {
     const matchId = data.matchId;
     let text = data.text;
     if (typeof text !== 'string') return;
-    text = text.trim();
+    text = text.trim().slice(0, 200);
     if (!text) return;
-    text = text.slice(0, 200); // basic length cap
 
     const match = matches[matchId];
     if (!match || match.status !== 'active') return;
-
-    // Only allow the two fighters to send messages
-    if (!match.players.includes(socket.id)) return;
+    if (!match.players.includes(socket.id)) return; // spectators cannot send
 
     io.to(match.roomId).emit('chatMessage', {
       timestamp: Date.now(),
@@ -602,11 +557,9 @@ io.on('connection', socket => {
     });
   });
 
-  // Player wants a rematch (optional: here we just requeue them)
-  socket.on('requestRematch', data => {
+  socket.on('requestRematch', () => {
     const player = safeGetPlayer(socket.id);
-    if (!player || !data) return;
-    // Simple approach: just requeue this player
+    if (!player) return;
     if (!waitingQueue.includes(socket.id)) {
       waitingQueue.push(socket.id);
       broadcastLobbyState();
@@ -614,35 +567,32 @@ io.on('connection', socket => {
     }
   });
 
-  // Player manually leaves a match
-  socket.on('leaveMatch', data => {
+  socket.on('leaveMatch', () => {
     const player = safeGetPlayer(socket.id);
-    if (!player) return;
-    if (!player.matchId) return;
+    if (!player || !player.matchId) return;
     handlePlayerLeaveMatch(socket.id, 'forfeit');
   });
 
   socket.on('disconnect', () => {
     console.log('Client disconnected:', socket.id);
     const player = safeGetPlayer(socket.id);
-    if (!player) {
-      return;
-    }
+    if (!player) return;
 
-    // Remove from waiting queue
     removeFromWaitingQueue(socket.id);
 
-    // If they were spectating something, clear that
-    player.spectatingMatchId = null;
+    if (player.spectatingMatchId) {
+      const m = matches[player.spectatingMatchId];
+      if (m) {
+        const s = getSocketById(socket.id);
+        if (s) s.leave(m.roomId);
+      }
+    }
 
-    // If they were in a match, handle it
     if (player.matchId) {
       handlePlayerLeaveMatch(socket.id, 'disconnect');
     }
 
-    // Finally, delete from players
     delete players[socket.id];
-
     broadcastLobbyState();
   });
 });
