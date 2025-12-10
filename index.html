@@ -1,7 +1,7 @@
 <!-- index.html -->
 <!--
   Rock-Paper-Scissors Coliseum
-  Client built with p5.js + p5.sound + socket.io
+  Client built with p5.js + (optional) p5.sound + socket.io
   - Open multiple tabs to test multiplayer.
   - Click the Rock / Paper / Scissors buttons during a match.
   - Press 'L' to leave (forfeit) a match.
@@ -15,7 +15,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <!-- p5.js -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
-  <!-- p5.sound for audio -->
+  <!-- p5.sound (optional; game still works if this fails to load) -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/addons/p5.sound.min.js"></script>
   <!-- socket.io client from the server -->
   <script src="/socket.io/socket.io.js"></script>
@@ -43,20 +43,27 @@ let imgRock, imgPaper, imgScissors;
 let sfxWin, sfxLose, sfxTie, sfxMatchStart, sfxAmbient;
 let audioStarted = false;
 
-// p5 preload: load images and sounds
+// p5 preload: load images and (if available) sounds
 function preload() {
-  // Images
+  // Images (these never break the sketch if missing; p5 just logs errors)
   imgRock = loadImage('IMM270_Rock.gif');
   imgPaper = loadImage('IMM270_Paper.gif');
   imgScissors = loadImage('IMM270_Scissors.gif');
 
-  // Audio
-  soundFormats('mp3', 'wav');
-  sfxWin = loadSound('IMM270_Win_Sound.mp3');
-  sfxLose = loadSound('IMM270_Lose_Sound.wav');
-  sfxTie = loadSound('IMM270_Tie_Sound.wav');
-  sfxMatchStart = loadSound('IMM270_MatchStart_Sound.wav');
-  sfxAmbient = loadSound('IMM270_spectator-and-background_Sound.wav');
+  // Sounds are OPTIONAL. Guard everything so lack of p5.sound doesn't crash.
+  if (typeof soundFormats === 'function') {
+    soundFormats('mp3', 'wav');
+  }
+
+  if (typeof loadSound === 'function') {
+    sfxWin = loadSound('IMM270_Win_Sound.mp3');
+    sfxLose = loadSound('IMM270_Lose_Sound.wav');
+    sfxTie = loadSound('IMM270_Tie_Sound.wav');
+    sfxMatchStart = loadSound('IMM270_MatchStart_Sound.wav');
+    sfxAmbient = loadSound('IMM270_spectator-and-background_Sound.wav');
+  } else {
+    console.log('p5.sound not available; game will run without audio.');
+  }
 }
 
 // ---------------------------
@@ -128,6 +135,13 @@ function randomColor() {
 }
 
 function initSocket() {
+  // Guard in case socket.io failed to load
+  if (typeof io !== 'function') {
+    connectionStatus = 'disconnected';
+    console.error('socket.io client failed to load.');
+    return;
+  }
+
   socket = io();
 
   connectionStatus = 'connecting';
@@ -174,7 +188,7 @@ function initSocket() {
     lastRoundResult = null;
 
     // Play match-start sound
-    if (sfxMatchStart && sfxMatchStart.isLoaded()) {
+    if (sfxMatchStart && typeof sfxMatchStart.isLoaded === 'function' && sfxMatchStart.isLoaded()) {
       sfxMatchStart.play();
     }
   });
@@ -206,11 +220,11 @@ function initSocket() {
     // Play win/lose/tie sound
     const myId = socket ? socket.id : null;
     if (!data.winnerId) {
-      if (sfxTie && sfxTie.isLoaded()) sfxTie.play();
+      if (sfxTie && typeof sfxTie.isLoaded === 'function' && sfxTie.isLoaded()) sfxTie.play();
     } else if (myId && data.winnerId === myId) {
-      if (sfxWin && sfxWin.isLoaded()) sfxWin.play();
+      if (sfxWin && typeof sfxWin.isLoaded === 'function' && sfxWin.isLoaded()) sfxWin.play();
     } else {
-      if (sfxLose && sfxLose.isLoaded()) sfxLose.play();
+      if (sfxLose && typeof sfxLose.isLoaded === 'function' && sfxLose.isLoaded()) sfxLose.play();
     }
   });
 
@@ -263,7 +277,7 @@ function drawConnectionStatusBar() {
     statusText = 'Connected';
     statusColor = color(0, 255, 0);
   } else if (connectionStatus === 'disconnected') {
-    statusText = 'Disconnected (trying to reconnect)';
+    statusText = 'Disconnected (check server & console)';
     statusColor = color(255, 80, 80);
   }
 
@@ -545,17 +559,16 @@ function drawRoundResultPanel() {
   text(`Reason: ${reasonText}`, x + 16, y + 60);
 
   // Show move icons for each player
-  if (revealedMoves) {
+  if (revealedMoves && currentMatch && currentMatch.players) {
     const [pA, pB] = currentMatch.players;
-    const moveA = revealedMoves[pA?.id];
-    const moveB = revealedMoves[pB?.id];
+    const moveA = pA ? revealedMoves[pA.id] : null;
+    const moveB = pB ? revealedMoves[pB.id] : null;
 
     const iconSize = 48;
     const midY = y + 100;
     const leftX = x + panelWidth * 0.25 - iconSize / 2;
     const rightX = x + panelWidth * 0.75 - iconSize / 2;
 
-    // Helper
     function imgForMove(m) {
       if (m === 'rock') return imgRock;
       if (m === 'paper') return imgPaper;
@@ -563,7 +576,6 @@ function drawRoundResultPanel() {
       return null;
     }
 
-    // Player A
     if (pA) {
       const imgA = imgForMove(moveA);
       if (imgA) {
@@ -574,7 +586,6 @@ function drawRoundResultPanel() {
       text(pA.name, x + panelWidth * 0.25, midY + iconSize / 2 + 4);
     }
 
-    // Player B
     if (pB) {
       const imgB = imgForMove(moveB);
       if (imgB) {
@@ -604,17 +615,21 @@ function drawFooterInstructions() {
 }
 
 // ---------------------------
-// Input handling
+// Input handling / audio start
 // ---------------------------
 
 function startAudioIfNeeded() {
   if (!audioStarted) {
     audioStarted = true;
-    // Required for some browsers to allow sound
-    userStartAudio();
-
-    // Start ambient crowd/background loop
-    if (sfxAmbient && sfxAmbient.isLoaded() && !sfxAmbient.isPlaying()) {
+    if (typeof userStartAudio === 'function') {
+      userStartAudio();
+    }
+    // Start ambient crowd/background loop if we actually loaded the sound
+    if (sfxAmbient &&
+        typeof sfxAmbient.isLoaded === 'function' &&
+        sfxAmbient.isLoaded() &&
+        typeof sfxAmbient.isPlaying === 'function' &&
+        !sfxAmbient.isPlaying()) {
       sfxAmbient.setLoop(true);
       sfxAmbient.setVolume(0.35);
       sfxAmbient.play();
