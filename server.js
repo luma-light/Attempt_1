@@ -32,7 +32,8 @@ players[socketId] = {
   preferredColor: '#ff00ff',
   role: 'spectator' | 'player',
   roomId: 'lobby' | `match:${matchId}`,
-  matchId: null | matchId,
+  matchId: null | matchId,        // match they are actively playing in
+  spectatingMatchId: null | matchId, // match they are currently spectating
   totalWins: 0,
   totalLosses: 0,
   timeLastHeartbeat: 0
@@ -48,7 +49,7 @@ matches[matchId] = {
   scores: { [socketIdA]: 0, [socketIdB]: 0 },
   round: 1,
   currentTurn: socketIdA,
-  turnDeadline: Date.now() + 10000,
+  turnDeadline: Date.now() + ROUND_TIME_LIMIT,
   moves: { [socketIdA]: null, [socketIdB]: null },
   status: 'active' | 'finished',
   roomId: `match:${matchId}`,
@@ -69,7 +70,7 @@ let globalStats = {
 const HEARTBEAT_TIMEOUT = 15000; // 15 seconds
 
 // Match config
-const ROUND_TIME_LIMIT = 10000; // 10 seconds per round
+const ROUND_TIME_LIMIT = 30000; // 30 seconds per round (was 10s)
 const WINS_TO_TAKE_MATCH = 3;
 
 // -------------
@@ -133,6 +134,11 @@ function getSocketById(id) {
   return null;
 }
 
+// Remove player from waitingQueue helper
+function removeFromWaitingQueue(id) {
+  waitingQueue = waitingQueue.filter(pid => pid !== id);
+}
+
 // Create a new match from two player IDs
 function createMatch(playerIdA, playerIdB) {
   const matchId = `${playerIdA}_${playerIdB}_${Date.now()}`;
@@ -159,6 +165,15 @@ function createMatch(playerIdA, playerIdB) {
     if (!p) return;
     const socket = getSocketById(pid);
     if (!socket) return;
+
+    // If they were spectating some match, leave that room first
+    if (p.spectatingMatchId) {
+      const oldMatch = matches[p.spectatingMatchId];
+      if (oldMatch) {
+        socket.leave(oldMatch.roomId);
+      }
+      p.spectatingMatchId = null;
+    }
 
     // Leave lobby room and join match room
     socket.leave('lobby');
@@ -194,7 +209,8 @@ function emitTurnUpdate(match) {
     timestamp: Date.now(),
     matchId: match.id,
     holderId: match.currentTurn, // purely cosmetic now
-    expiresAt: match.turnDeadline
+    expiresAt: match.turnDeadline,
+    durationMs: ROUND_TIME_LIMIT
   });
 }
 
@@ -328,11 +344,6 @@ function tryStartMatches() {
   }
 }
 
-// Remove player from waitingQueue helper
-function removeFromWaitingQueue(id) {
-  waitingQueue = waitingQueue.filter(pid => pid !== id);
-}
-
 // Handle player leaving a match (manual or disconnect)
 function handlePlayerLeaveMatch(socketId, reason) {
   const player = safeGetPlayer(socketId);
@@ -370,6 +381,7 @@ setInterval(() => {
         if (p.matchId) {
           handlePlayerLeaveMatch(id, 'disconnect');
         }
+        p.spectatingMatchId = null;
         delete players[id];
       }
     }
@@ -418,6 +430,7 @@ io.on('connection', socket => {
     role: 'spectator',
     roomId: 'lobby',
     matchId: null,
+    spectatingMatchId: null,
     totalWins: 0,
     totalLosses: 0,
     timeLastHeartbeat: Date.now()
@@ -427,6 +440,7 @@ io.on('connection', socket => {
   broadcastLobbyState();
 
   // Client wants to enter lobby with a name/color
+  // joinQueue flag controls whether they enter the matchmaking queue.
   socket.on('joinLobby', data => {
     const now = Date.now();
     const player = safeGetPlayer(socket.id);
@@ -442,15 +456,84 @@ io.on('connection', socket => {
     player.matchId = null;
     player.timeLastHeartbeat = now;
 
-    // Put them into waiting queue
-    if (!waitingQueue.includes(socket.id)) {
-      waitingQueue.push(socket.id);
+    if (data && data.joinQueue) {
+      if (!waitingQueue.includes(socket.id)) {
+        waitingQueue.push(socket.id);
+      }
+    } else {
+      removeFromWaitingQueue(socket.id);
     }
 
-    console.log(`Player ${player.id} joined lobby as "${player.name}"`);
+    console.log(`Player ${player.id} joined lobby as "${player.name}" (inQueue=${!!(data && data.joinQueue)})`);
 
     broadcastLobbyState();
     tryStartMatches();
+  });
+
+  // Toggle queue membership explicitly
+  socket.on('setQueueStatus', data => {
+    const player = safeGetPlayer(socket.id);
+    if (!player) return;
+    const inQueue = !!(data && data.inQueue);
+
+    if (inQueue) {
+      if (!waitingQueue.includes(socket.id)) {
+        waitingQueue.push(socket.id);
+      }
+    } else {
+      removeFromWaitingQueue(socket.id);
+    }
+
+    broadcastLobbyState();
+    tryStartMatches();
+  });
+
+  // Spectate a given match (spectators see chat and rounds but cannot play)
+  socket.on('spectateMatch', data => {
+    const player = safeGetPlayer(socket.id);
+    if (!player || !data) return;
+    const matchId = data.matchId;
+    const match = matches[matchId];
+    if (!match || match.status !== 'active') return;
+
+    // Leave any previous spectated match
+    if (player.spectatingMatchId && player.spectatingMatchId !== matchId) {
+      const oldMatch = matches[player.spectatingMatchId];
+      if (oldMatch) {
+        socket.leave(oldMatch.roomId);
+      }
+    }
+
+    socket.join(match.roomId);
+    player.spectatingMatchId = matchId;
+
+    // Send a snapshot of current match state to this spectator
+    socket.emit('match_snapshot', {
+      timestamp: Date.now(),
+      matchId: match.id,
+      players: match.players.map(pid => {
+        const p = safeGetPlayer(pid);
+        return p ? { id: p.id, name: p.name } : { id: pid, name: 'Unknown' };
+      }),
+      scores: match.scores,
+      round: match.round,
+      turnInfo: {
+        holderId: match.currentTurn,
+        expiresAt: match.turnDeadline,
+        durationMs: ROUND_TIME_LIMIT
+      }
+    });
+  });
+
+  // Leave spectating a match and return to lobby view
+  socket.on('leaveSpectate', () => {
+    const player = safeGetPlayer(socket.id);
+    if (!player || !player.spectatingMatchId) return;
+    const match = matches[player.spectatingMatchId];
+    if (match) {
+      socket.leave(match.roomId);
+    }
+    player.spectatingMatchId = null;
   });
 
   // Heartbeat to detect AFK / dead sockets
@@ -491,6 +574,34 @@ io.on('connection', socket => {
     }
   });
 
+  // Match-local chat: only active players can send;
+  // everyone in the match room (players + spectators) sees the message.
+  socket.on('chatMessage', data => {
+    const player = safeGetPlayer(socket.id);
+    if (!player || !data) return;
+
+    const matchId = data.matchId;
+    let text = data.text;
+    if (typeof text !== 'string') return;
+    text = text.trim();
+    if (!text) return;
+    text = text.slice(0, 200); // basic length cap
+
+    const match = matches[matchId];
+    if (!match || match.status !== 'active') return;
+
+    // Only allow the two fighters to send messages
+    if (!match.players.includes(socket.id)) return;
+
+    io.to(match.roomId).emit('chatMessage', {
+      timestamp: Date.now(),
+      matchId: match.id,
+      fromId: socket.id,
+      fromName: player.name,
+      text
+    });
+  });
+
   // Player wants a rematch (optional: here we just requeue them)
   socket.on('requestRematch', data => {
     const player = safeGetPlayer(socket.id);
@@ -520,6 +631,9 @@ io.on('connection', socket => {
 
     // Remove from waiting queue
     removeFromWaitingQueue(socket.id);
+
+    // If they were spectating something, clear that
+    player.spectatingMatchId = null;
 
     // If they were in a match, handle it
     if (player.matchId) {
