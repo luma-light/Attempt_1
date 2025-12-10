@@ -1,8 +1,3 @@
-<!-- index.html -->
-<!--
-  Rock-Paper-Scissors Coliseum
--->
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -27,7 +22,6 @@
     canvas {
       display: block;
     }
-    /* Chat input overlay */
     #chat-input {
       position: fixed;
       bottom: 40px;
@@ -49,7 +43,7 @@
 // Constants
 // ---------------------------
 
-const ROUND_TIME_MS = 30000; // 30s client-side for timer visuals
+const ROUND_TIME_MS = 30000; // 30s visual timer
 
 // ---------------------------
 // Asset variables
@@ -59,14 +53,11 @@ let imgRock, imgPaper, imgScissors;
 let sfxWin, sfxLose, sfxTie, sfxMatchStart, sfxAmbient;
 let audioStarted = false;
 
-// p5 preload: load images and (if available) sounds
 function preload() {
-  // Images
   imgRock = loadImage('IMM270_Rock.gif');
   imgPaper = loadImage('IMM270_Paper.gif');
   imgScissors = loadImage('IMM270_Scissors.gif');
 
-  // Sounds are OPTIONAL. Guard everything so lack of p5.sound doesn't crash.
   if (typeof soundFormats === 'function') {
     soundFormats('mp3', 'wav');
   }
@@ -87,7 +78,7 @@ function preload() {
 // ---------------------------
 
 let socket;
-let connectionStatus = 'connecting'; // 'connecting' | 'connected' | 'disconnected'
+let connectionStatus = 'connecting';
 
 let myPlayer = {
   id: null,
@@ -106,71 +97,62 @@ let lobbyState = {
 let uiMode = 'lobby'; // 'lobby' | 'match' | 'spectate' | 'settings'
 let isInQueue = false;
 
-let currentMatch = null; // snapshot of the current match for this client
+let currentMatch = null;
 let viewingMatchAsSpectator = false;
 
 let turnInfo = {
   holderId: null,
-  expiresAt: 0,
+  expiresAt: 0,      // client-local future time
   durationMs: ROUND_TIME_MS
 };
 
-let lastRoundResult = null; // { winnerId, reason, round, revealedMoves, scores }
+let lastRoundResult = null;
 
-// Button bounds for R/P/S in match UI
 let rpsButtons = [];
 
-// Lobby buttons & clickable zones
 let lobbyButtons = {
   queue: null,
   spectateRandom: null,
   settings: null,
-  matches: [] // [{x,y,w,h,matchId}]
+  matches: []
 };
 
-// Spectator back-to-lobby button in match view
 let spectateBackButton = null;
 
-// Match chat
-let matchChatMessages = []; // {fromName, text, timestamp, fromId}
+let matchChatMessages = [];
 
-// Chat input element
 let chatInputEl = null;
 
-// Volume / settings
-let volumeLevel = 0.8; // 0..1
-let volumeSlider = null; // {x,y,w,h}
+let volumeLevel = 0.8;
+let volumeSlider = null;
 let backFromSettingsButton = null;
-let volumeDragging = false; // for dynamic slider
+let volumeDragging = false;
 
 // ---------------------------
 // Layout helper
 // ---------------------------
 
 function getLayout() {
-  const chatWidth = width / 5; // left fifth
+  const chatWidth = width / 5; // left 1/5
   const gameX = chatWidth;
   const gameWidth = width - chatWidth;
   return { chatWidth, gameX, gameWidth };
 }
 
 // ---------------------------
-// Setup & socket connection
+// Setup & sockets
 // ---------------------------
 
 function setup() {
   createCanvas(windowWidth, windowHeight);
 
-  // Ask for a name once
   let name = prompt("Enter your gladiator name:", "Player");
   if (!name || !name.trim()) {
     name = "Player";
   }
   myPlayer.name = name.trim().slice(0, 20);
-  // Give each client a random-ish color
   myPlayer.preferredColor = randomColor();
 
-  // Chat input element
   chatInputEl = document.getElementById('chat-input');
   chatInputEl.addEventListener('keydown', e => {
     if (e.key === 'Enter') {
@@ -185,7 +167,6 @@ function setup() {
   textFont('system-ui');
   textAlign(LEFT, TOP);
 
-  // Apply initial volume
   setVolumeLevel(volumeLevel);
 }
 
@@ -201,7 +182,6 @@ function randomColor() {
 }
 
 function initSocket() {
-  // Guard in case socket.io failed to load
   if (typeof io !== 'function') {
     connectionStatus = 'disconnected';
     console.error('socket.io client failed to load.');
@@ -209,17 +189,16 @@ function initSocket() {
   }
 
   socket = io();
-
   connectionStatus = 'connecting';
 
   socket.on('connect', () => {
     connectionStatus = 'connected';
     myPlayer.id = socket.id;
-    // Join the lobby but DO NOT auto-queue
+
+    // Join lobby only. Explicitly ensure NOT queued.
     socket.emit('joinLobby', {
       name: myPlayer.name,
       preferredColor: myPlayer.preferredColor,
-      joinQueue: false,
       timestamp: Date.now()
     });
   });
@@ -228,14 +207,12 @@ function initSocket() {
     connectionStatus = 'disconnected';
   });
 
-  // Lobby snapshot from server
   socket.on('lobbyState', data => {
     if (!data) return;
     lobbyState.spectators = data.spectators || [];
     lobbyState.activeMatches = data.activeMatches || [];
     lobbyState.globalStats = data.globalStats || lobbyState.globalStats;
 
-    // Update my local W/L from lobby snapshot if I'm in spectator list
     if (myPlayer.id) {
       const self = lobbyState.spectators.find(p => p.id === myPlayer.id);
       if (self) {
@@ -244,13 +221,12 @@ function initSocket() {
       }
     }
 
-    // If we're not in a match/spectate/settings, make sure UI mode is lobby
+    // If not in a match or settings, stay in lobby
     if (!currentMatch && uiMode !== 'settings') {
       uiMode = 'lobby';
     }
   });
 
-  // A new match has started for us (as a player)
   socket.on('match_start', data => {
     if (!data) return;
     uiMode = 'match';
@@ -265,17 +241,18 @@ function initSocket() {
     hasSubmittedMoveThisRound = false;
     lastRoundResult = null;
     matchChatMessages = [];
-    turnInfo.holderId = data.startingPlayer;
-    // turnInfo.expiresAt will be updated by turnUpdate
 
-    // Play match-start sound
+    // Start with a full-duration local timer; will be corrected by turnUpdate
+    turnInfo.holderId = data.startingPlayer;
+    turnInfo.durationMs = ROUND_TIME_MS;
+    turnInfo.expiresAt = Date.now() + ROUND_TIME_MS;
+
     if (sfxMatchStart && typeof sfxMatchStart.isLoaded === 'function' && sfxMatchStart.isLoaded()) {
       sfxMatchStart.setVolume(volumeLevel);
       sfxMatchStart.play();
     }
   });
 
-  // Snapshot for spectators joining mid-match
   socket.on('match_snapshot', data => {
     if (!data) return;
     currentMatch = {
@@ -288,33 +265,43 @@ function initSocket() {
     viewingMatchAsSpectator = true;
     lastRoundResult = null;
     matchChatMessages = [];
+
+    const expiresAtServer = data.turnInfo?.expiresAt || 0;
+    const serverTimestamp = data.timestamp || 0;
+    const remainingMs = Math.max(0, expiresAtServer - serverTimestamp);
+
     turnInfo.holderId = data.turnInfo?.holderId || null;
-    turnInfo.expiresAt = data.turnInfo?.expiresAt || 0;
-    turnInfo.durationMs = data.turnInfo?.durationMs || ROUND_TIME_MS;
+    // Use the remaining time as the "full bar" if durationMs is missing, so bar starts full
+    turnInfo.durationMs = data.turnInfo?.durationMs || remainingMs || ROUND_TIME_MS;
+    turnInfo.expiresAt  = Date.now() + remainingMs;
   });
 
-  // Turn / countdown info
   socket.on('turnUpdate', data => {
     if (!data) return;
     if (!currentMatch || currentMatch.matchId !== data.matchId) return;
 
+    const expiresAtServer = data.expiresAt || 0;
+    const serverTimestamp = data.timestamp || 0;
+    const remainingMs = Math.max(0, expiresAtServer - serverTimestamp);
+
     turnInfo.holderId = data.holderId;
-    turnInfo.expiresAt = data.expiresAt;
-    turnInfo.durationMs = data.durationMs || ROUND_TIME_MS;
+    // Key: use per-turn duration sent by server; fallback to remainingMs then ROUND_TIME_MS
+    turnInfo.durationMs = data.durationMs || remainingMs || ROUND_TIME_MS;
+    turnInfo.expiresAt  = Date.now() + remainingMs;
+
     hasSubmittedMoveThisRound = false;
 
     if (data.round != null) {
-      currentMatch.round = data.round; // <-- round header updates each round
+      currentMatch.round = data.round;
     }
   });
 
-  // Result of a round (revealed moves, scores, etc.)
   socket.on('round_result', data => {
     if (!data) return;
     if (!currentMatch || currentMatch.matchId !== data.matchId) return;
-    // This is the round that just *finished*.
-    // The next round number will be set via the subsequent turnUpdate.
+
     currentMatch.scores = data.scores;
+    currentMatch.round = data.round; // make sure round text updates
     lastRoundResult = {
       round: data.round,
       winnerId: data.winnerId,
@@ -324,7 +311,6 @@ function initSocket() {
     };
     hasSubmittedMoveThisRound = false;
 
-    // Play win/lose/tie sound
     const myId = socket ? socket.id : null;
     if (!data.winnerId) {
       if (sfxTie && typeof sfxTie.isLoaded === 'function' && sfxTie.isLoaded()) {
@@ -344,7 +330,6 @@ function initSocket() {
     }
   });
 
-  // Match end screen
   socket.on('game_end', data => {
     if (!data) return;
     if (!currentMatch || currentMatch.matchId !== data.matchId) return;
@@ -352,23 +337,20 @@ function initSocket() {
     const myId = socket ? socket.id : null;
     const amParticipant = currentMatch.players?.some(p => p.id === myId);
 
-    // Clear local match state for both spectators and players
     currentMatch = null;
     lastRoundResult = null;
     matchChatMessages = [];
 
-    if (viewingMatchAsSpectator) {
-      viewingMatchAsSpectator = false;
-      uiMode = 'lobby';
-    } else if (amParticipant) {
-      uiMode = 'lobby';
+    viewingMatchAsSpectator = false;
+    uiMode = 'lobby';
+    if (amParticipant) {
       isInQueue = false;
     }
   });
 
-  // Match chat messages (do NOT discard them based on matchId)
   socket.on('chatMessage', data => {
     if (!data) return;
+    // Show whatever the server broadcasts to this tab (players + spectators)
     matchChatMessages.push({
       fromName: data.fromName || '???',
       text: data.text || '',
@@ -381,7 +363,6 @@ function initSocket() {
   });
 }
 
-// Periodic heartbeat to server so it can detect AFK / closed tabs
 function setupHeartbeat() {
   setInterval(() => {
     if (socket && socket.connected) {
@@ -391,7 +372,7 @@ function setupHeartbeat() {
 }
 
 // ---------------------------
-// Main draw loop
+// Main draw
 // ---------------------------
 
 let hasSubmittedMoveThisRound = false;
@@ -414,9 +395,6 @@ function draw() {
 }
 
 function drawConnectionStatusBar() {
-  const { chatWidth } = getLayout();
-
-  // Simple status indicator at top
   const h = 32;
   noStroke();
   fill(20, 220);
@@ -438,7 +416,6 @@ function drawConnectionStatusBar() {
   textAlign(LEFT, CENTER);
   text(statusText, 16, h / 2);
 
-  // Show player name and record on the right
   fill(200);
   textAlign(RIGHT, CENTER);
   const recordPart =
@@ -456,7 +433,6 @@ function drawLobbyUI() {
   const padding = 24;
   const topOffset = 40;
 
-  // Title
   textAlign(CENTER, TOP);
   textSize(32);
   fill(240);
@@ -470,7 +446,6 @@ function drawLobbyUI() {
     topOffset + 40
   );
 
-  // Global stats
   const statsY = topOffset + 80;
   fill(180);
   textAlign(CENTER, TOP);
@@ -481,18 +456,17 @@ function drawLobbyUI() {
     statsY
   );
 
-  // Main CTA buttons
   const buttonWidth = 220;
   const buttonHeight = 50;
   const centerX = width / 2;
   const buttonsBaseY = statsY + 40;
 
-  // Queue button
+  // ----- Queue button -----
   const queueX = centerX - buttonWidth - 16;
   const queueY = buttonsBaseY;
   lobbyButtons.queue = { x: queueX, y: queueY, w: buttonWidth, h: buttonHeight };
 
-  let isHoverQueue =
+  const isHoverQueue =
     mouseX >= queueX && mouseX <= queueX + buttonWidth &&
     mouseY >= queueY && mouseY <= queueY + buttonHeight;
 
@@ -504,23 +478,36 @@ function drawLobbyUI() {
   textAlign(CENTER, CENTER);
   textSize(16);
   fill(240);
-  text(isInQueue ? "Leave Queue" : "Join Match Queue", queueX + buttonWidth / 2, queueY + buttonHeight / 2);
+  text(isInQueue ? "Leave Match Queue" : "Join Match Queue", queueX + buttonWidth / 2, queueY + buttonHeight / 2);
 
-  // Spectate button
+  // ----- Spectate random button -----
   const specX = centerX + 16;
   const specY = buttonsBaseY;
   lobbyButtons.spectateRandom = { x: specX, y: specY, w: buttonWidth, h: buttonHeight };
+
+  const hasMatches = lobbyState.activeMatches.length > 0;
 
   const specHover =
     mouseX >= specX && mouseX <= specX + buttonWidth &&
     mouseY >= specY && mouseY <= specY + buttonHeight;
 
-  fill(specHover ? color(80, 80, 130) : color(40, 40, 90));
-  rect(specX, specY, buttonWidth, buttonHeight, 10);
-  fill(240);
-  text("Spectate Random Match", specX + buttonWidth / 2, specY + buttonHeight / 2);
+  let specColor;
+  if (!hasMatches) {
+    specColor = color(30); // disabled look
+  } else {
+    specColor = specHover ? color(80, 80, 130) : color(40, 40, 90);
+  }
 
-  // Settings button (top-right, small)
+  fill(specColor);
+  rect(specX, specY, buttonWidth, buttonHeight, 10);
+  fill(hasMatches ? 240 : 140);
+  text(
+    hasMatches ? "Spectate Random Match" : "No Matches to Spectate",
+    specX + buttonWidth / 2,
+    specY + buttonHeight / 2
+  );
+
+  // ----- Settings button -----
   const settingsWidth = 110;
   const settingsHeight = 26;
   const settingsX = width - settingsWidth - padding;
@@ -538,7 +525,7 @@ function drawLobbyUI() {
   fill(220);
   text("⚙ Settings", settingsX + settingsWidth / 2, settingsY + settingsHeight / 2);
 
-  // Spectator list (left)
+  // ----- Lobby list -----
   const listY = buttonsBaseY + 80;
   textAlign(LEFT, TOP);
   fill(220);
@@ -554,7 +541,7 @@ function drawLobbyUI() {
     text(label, padding, y + i * lineHeight);
   });
 
-  // Active matches on the right, clickable to spectate
+  // ----- Active matches list -----
   const matchesX = width * 0.5 + 40;
   fill(220);
   textSize(18);
@@ -620,18 +607,17 @@ function drawMatchUI() {
   const nameA = pA ? pA.name : "Player A";
   const nameB = pB ? pB.name : "Player B";
 
-  // Title (centered in the game area, not over chat)
   textAlign(CENTER, TOP);
   textSize(24);
   fill(240);
   text(`MATCH #${currentMatch.matchId.slice(-6)}`, gameX + gameWidth / 2, topOffset);
 
-  // If spectating, show a back button to lobby (above chat, left column)
+  // Back to lobby button for spectators
   spectateBackButton = null;
   if (viewingMatchAsSpectator) {
     const bX = 20;
     const bY = topOffset + 8;
-    const bW = 140;
+    const bW = 160;
     const bH = 26;
     spectateBackButton = { x: bX, y: bY, w: bW, h: bH };
 
@@ -648,7 +634,6 @@ function drawMatchUI() {
     text("← Back to Lobby", bX + bW / 2, bY + bH / 2);
   }
 
-  // Players and scoreboard (in game area)
   textSize(16);
   textAlign(CENTER, TOP);
   fill(200);
@@ -663,7 +648,6 @@ function drawMatchUI() {
     topOffset + 40
   );
 
-  // Highlight "You"
   textSize(14);
   if (isPlayerA) {
     fill(120, 255, 120);
@@ -674,27 +658,21 @@ function drawMatchUI() {
     text("(You)", gameX + gameWidth * 0.75, topOffset + 60);
   }
 
-  // Round info
   textAlign(CENTER, TOP);
   textSize(18);
   fill(220);
   const roundLabel = currentMatch.round != null ? currentMatch.round : 1;
   text(`Round ${roundLabel}`, gameX + gameWidth / 2, topOffset + 90);
 
-  // Turn + timer bar (inside game area, moved down)
   drawTurnTimerBar(gameX, gameWidth);
 
-  // R/P/S buttons for your input (only if you're a player)
   if (isParticipant && uiMode === 'match') {
     drawRPSButtons(gameX, gameWidth);
   } else {
     rpsButtons = [];
   }
 
-  // Last round result panel (inside game area)
   drawRoundResultPanel(gameX, gameWidth);
-
-  // Chat panel (strictly first 1/5 on the left)
   drawChatPanel(isParticipant);
 }
 
@@ -702,12 +680,14 @@ function drawTurnTimerBar(gameX, gameWidth) {
   const barWidth = gameWidth * 0.8;
   const barHeight = 16;
   const x = gameX + (gameWidth - barWidth) / 2;
-  const y = 170; // moved down so it doesn't overlap the round text
+  const y = 170; // moved down so it doesn't block round text
 
   const now = Date.now();
   const remaining = Math.max(0, turnInfo.expiresAt - now);
-  const totalMs = ROUND_TIME_MS;
-  const progress = constrain(remaining / totalMs, 0, 1);
+
+  // IMPORTANT: use the actual duration for this turn, not a hard-coded constant
+  const totalMs = turnInfo.durationMs || ROUND_TIME_MS;
+  const progress = totalMs > 0 ? constrain(remaining / totalMs, 0, 1) : 0;
 
   noStroke();
   fill(40);
@@ -718,7 +698,6 @@ function drawTurnTimerBar(gameX, gameWidth) {
     rect(x, y, barWidth * progress, barHeight, 8);
   }
 
-  // Text: countdown only (simultaneous play)
   textAlign(CENTER, CENTER);
   textSize(12);
   fill(220);
@@ -751,12 +730,10 @@ function drawRPSButtons(gameX, gameWidth) {
       mouseX >= x && mouseX <= x + buttonWidth &&
       mouseY >= y && mouseY <= y + buttonHeight;
 
-    // Button background
     noStroke();
     fill(hover ? 70 : 45);
     rect(x, y, buttonWidth, buttonHeight, 10);
 
-    // Icon image
     let img = null;
     if (moves[i] === 'rock') img = imgRock;
     else if (moves[i] === 'paper') img = imgPaper;
@@ -773,14 +750,12 @@ function drawRPSButtons(gameX, gameWidth) {
       );
     }
 
-    // Label
     textAlign(CENTER, BOTTOM);
     textSize(14);
     fill(230);
     text(labels[i], x + buttonWidth / 2, y - 4);
   }
 
-  // Info text
   textAlign(CENTER, TOP);
   textSize(14);
   fill(190);
@@ -832,7 +807,6 @@ function drawRoundResultPanel(gameX, gameWidth) {
   text(`Outcome: ${outcome}`, x + 16, y + 40);
   text(`Reason: ${reasonText}`, x + 16, y + 60);
 
-  // Show move icons for each player
   if (revealedMoves && currentMatch && currentMatch.players) {
     const [pA, pB] = currentMatch.players;
     const moveA = pA ? revealedMoves[pA.id] : null;
@@ -864,7 +838,6 @@ function drawRoundResultPanel(gameX, gameWidth) {
           iconSize
         );
       }
-      // Centered name under icon
       text(pA.name, leftCenterX, midY + iconSize / 2 + 4);
     }
 
@@ -879,7 +852,6 @@ function drawRoundResultPanel(gameX, gameWidth) {
           iconSize
         );
       }
-      // Centered name under icon
       text(pB.name, rightCenterX, midY + iconSize / 2 + 4);
     }
   }
@@ -905,8 +877,8 @@ function drawChatPanel(isParticipant) {
   fill(200);
   text(
     isParticipant
-      ? "Talk to your opponent. Spectators can only watch."
-      : "Spectators cannot chat.",
+      ? "You are in the fight. Spectators can comment too."
+      : "You are spectating. Players and spectators share this chat.",
     x + 10,
     y + 26
   );
@@ -923,7 +895,7 @@ function drawChatPanel(isParticipant) {
   for (const msg of recent) {
     const prefix = msg.fromName + ": ";
     const fullText = prefix + msg.text;
-    fill(255); // white chat text
+    fill(255);
     text(fullText, x + 10, lineY);
     lineY += lineStep;
   }
@@ -950,14 +922,12 @@ function drawSettingsUI() {
   fill(230);
   text("Arena Volume", x + 24, y + 24);
 
-  // Slider
   const sliderX = x + 24;
   const sliderY = y + 80;
   const sliderW = panelWidth - 48;
   const sliderH = 10;
   volumeSlider = { x: sliderX, y: sliderY - sliderH / 2, w: sliderW, h: sliderH * 2 };
 
-  // Track
   noStroke();
   fill(50);
   rect(sliderX, sliderY - sliderH / 2, sliderW, sliderH, 6);
@@ -972,7 +942,6 @@ function drawSettingsUI() {
   fill(200);
   text(`Volume: ${(volumeLevel * 100).toFixed(0)}%`, x + 24, y + 110);
 
-  // Back button
   const bW = 120;
   const bH = 32;
   const bX = x + panelWidth / 2 - bW / 2;
@@ -1005,14 +974,14 @@ function drawFooterInstructions() {
   } else if (uiMode === 'match') {
     text("Match: both players click Rock / Paper / Scissors before the timer runs out. Press 'L' to forfeit and leave the match.", width / 2, footerY + 14);
   } else if (uiMode === 'spectate') {
-    text("Spectating: watch the duel and read the chatter. Use the Back button to return to the main hall.", width / 2, footerY + 14);
+    text("Spectating: watch the duel and join the chatter. Use the Back button to return to the main hall.", width / 2, footerY + 14);
   } else if (uiMode === 'settings') {
     text("Settings: adjust how loud the coliseum roars, then return to the main hall.", width / 2, footerY + 14);
   }
 }
 
 // ---------------------------
-// Input handling / audio start
+// Input / audio
 // ---------------------------
 
 function startAudioIfNeeded() {
@@ -1021,7 +990,6 @@ function startAudioIfNeeded() {
     if (typeof userStartAudio === 'function') {
       userStartAudio();
     }
-    // Start ambient crowd/background loop if we actually loaded the sound
     if (sfxAmbient &&
         typeof sfxAmbient.isLoaded === 'function' &&
         sfxAmbient.isLoaded() &&
@@ -1038,7 +1006,6 @@ function mousePressed() {
   startAudioIfNeeded();
 
   if (uiMode === 'match') {
-    // Only players can click R/P/S
     if (!viewingMatchAsSpectator) {
       handleRPSClick();
     }
@@ -1048,12 +1015,11 @@ function mousePressed() {
   } else if (uiMode === 'lobby') {
     handleLobbyClick();
   } else if (uiMode === 'settings') {
-    handleSettingsClick(true); // indicate from mouse press
+    handleSettingsClick(true);
   }
 }
 
 function mouseDragged() {
-  // Allow dynamic volume dragging
   if (uiMode === 'settings' && volumeDragging && volumeSlider) {
     const s = volumeSlider;
     const t = constrain((mouseX - s.x) / s.w, 0, 1);
@@ -1067,11 +1033,7 @@ function mouseReleased() {
 
 function handleRPSClick() {
   if (!currentMatch || !socket || !socket.connected) return;
-
-  // Don't let the player spam multiple choices per round
   if (hasSubmittedMoveThisRound) return;
-
-  // Do not allow moves after timer
   if (Date.now() > turnInfo.expiresAt) return;
 
   for (const btn of rpsButtons) {
@@ -1153,7 +1115,7 @@ function handleLobbyClick() {
     return;
   }
 
-  // Click on a specific active match row to spectate that match
+  // Click specific active match row to spectate
   for (const row of lobbyButtons.matches) {
     if (
       mouseX >= row.x && mouseX <= row.x + row.w &&
@@ -1175,7 +1137,6 @@ function requestSpectateMatch(matchId) {
 }
 
 function handleSettingsClick(fromMousePress = false) {
-  // Adjust volume by clicking / dragging on slider track
   if (volumeSlider) {
     const s = volumeSlider;
     if (
@@ -1185,12 +1146,11 @@ function handleSettingsClick(fromMousePress = false) {
       const t = constrain((mouseX - s.x) / s.w, 0, 1);
       setVolumeLevel(t);
       if (fromMousePress) {
-        volumeDragging = true; // start dragging mode
+        volumeDragging = true;
       }
     }
   }
 
-  // Back to lobby
   if (backFromSettingsButton) {
     const b = backFromSettingsButton;
     if (
@@ -1207,7 +1167,6 @@ function keyPressed() {
   if (!socket || !socket.connected) return;
 
   if (key === 'l' || key === 'L') {
-    // Leave match / forfeit
     if (uiMode === 'match' && currentMatch) {
       socket.emit('leaveMatch', {
         timestamp: Date.now()
@@ -1222,19 +1181,16 @@ function keyPressed() {
 }
 
 // ---------------------------
-// Chat helpers & visibility
+// Chat helpers
 // ---------------------------
 
 function sendChatMessage() {
   if (!chatInputEl) return;
-  if (!socket || !socket.connected || !currentMatch) return;
-  if (!currentMatch.players || !socket.id) return;
-
-  const isParticipant = currentMatch.players.some(p => p.id === socket.id);
-  if (!isParticipant) return; // spectators cannot send
+  if (!socket || !socket.connected) return;
 
   const text = chatInputEl.value.trim();
   if (!text) return;
+  if (!currentMatch) return;
 
   socket.emit('chatMessage', {
     matchId: currentMatch.matchId,
@@ -1255,9 +1211,11 @@ function updateChatInputVisibility() {
 
   const { chatWidth } = getLayout();
   const inputWidth = Math.max(chatWidth - 40, 120);
-
   chatInputEl.style.left = '10px';
   chatInputEl.style.width = inputWidth + 'px';
+
+  // Everyone can chat (players + spectators)
+  chatInputEl.disabled = false;
 
   const isParticipant =
     currentMatch &&
@@ -1265,14 +1223,13 @@ function updateChatInputVisibility() {
     currentMatch.players &&
     currentMatch.players.some(p => p.id === socket.id);
 
-  chatInputEl.disabled = !isParticipant;
   chatInputEl.placeholder = isParticipant
-    ? "Type message to your opponent and press Enter..."
-    : "Spectators cannot chat.";
+    ? "Type message to your opponent and spectators, then press Enter..."
+    : "Spectator: type message and press Enter...";
 }
 
 // ---------------------------
-// Volume control helper
+// Volume control
 // ---------------------------
 
 function setVolumeLevel(t) {

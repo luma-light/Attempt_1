@@ -36,7 +36,8 @@ players[socketId] = {
   spectatingMatchId: null | matchId,
   totalWins: 0,
   totalLosses: 0,
-  timeLastHeartbeat: 0
+  timeLastHeartbeat: 0,
+  wantsMatch: false
 };
 */
 
@@ -82,7 +83,7 @@ function safeGetPlayer(id) {
 
 function broadcastLobbyState() {
   const spectators = Object.values(players)
-    .filter(p => p.role === 'spectator')
+    .filter(p => p.roomId === 'lobby') // only those in the lobby
     .map(p => ({
       id: p.id,
       name: p.name,
@@ -168,6 +169,7 @@ function createMatch(playerIdA, playerIdB) {
     p.roomId = roomId;
     p.matchId = matchId;
     p.role = 'player';
+    p.wantsMatch = false; // once in match, they are no longer in queue
   });
 
   io.to(roomId).emit('match_start', {
@@ -188,13 +190,14 @@ function createMatch(playerIdA, playerIdB) {
 }
 
 function emitTurnUpdate(match) {
+  const now = Date.now();
   io.to(match.roomId).emit('turnUpdate', {
-    timestamp: Date.now(),
+    timestamp: now,
     matchId: match.id,
     holderId: match.currentTurn,
     expiresAt: match.turnDeadline,
     durationMs: ROUND_TIME_LIMIT,
-    round: match.round           // <-- include round for client header
+    round: match.round
   });
 }
 
@@ -220,7 +223,6 @@ function resolveRound(match, reason, leaverId = null) {
     if (leaverId && (leaverId === idA || leaverId === idB)) {
       winnerId = leaverId === idA ? idB : idA;
     } else {
-      // Fallback to "missing player" check if needed
       if (!safeGetPlayer(idA)) winnerId = idB;
       else if (!safeGetPlayer(idB)) winnerId = idA;
     }
@@ -289,10 +291,7 @@ function endMatch(match, winnerId) {
   });
 
   match.players.forEach(pid => {
-    // IMPORTANT: do not keep players in the queue after a match;
-    // they must click the queue button again to rejoin.
     removeFromWaitingQueue(pid);
-
     const socket = getSocketById(pid);
     const player = safeGetPlayer(pid);
     if (socket && player) {
@@ -301,6 +300,7 @@ function endMatch(match, winnerId) {
       player.roomId = 'lobby';
       player.matchId = null;
       player.role = 'spectator';
+      player.wantsMatch = false;
     }
   });
 
@@ -316,7 +316,16 @@ function tryStartMatches() {
 
     const pA = safeGetPlayer(playerIdA);
     const pB = safeGetPlayer(playerIdB);
-    if (!pA || !pB) continue;
+
+    // Extra safety: only match if both explicitly want a match and are in lobby
+    if (
+      !pA || !pB ||
+      !pA.wantsMatch || !pB.wantsMatch ||
+      pA.roomId !== 'lobby' ||
+      pB.roomId !== 'lobby'
+    ) {
+      continue;
+    }
 
     createMatch(playerIdA, playerIdB);
   }
@@ -330,6 +339,7 @@ function handlePlayerLeaveMatch(socketId, reason) {
     player.matchId = null;
     player.roomId = 'lobby';
     player.role = 'spectator';
+    player.wantsMatch = false;
     return;
   }
 
@@ -390,6 +400,7 @@ setInterval(() => {
 io.on('connection', socket => {
   console.log('Client connected:', socket.id);
 
+  // Newly connected players always start as lobby spectators, *not* queued.
   players[socket.id] = {
     id: socket.id,
     name: 'Anonymous',
@@ -400,9 +411,11 @@ io.on('connection', socket => {
     spectatingMatchId: null,
     totalWins: 0,
     totalLosses: 0,
-    timeLastHeartbeat: Date.now()
+    timeLastHeartbeat: Date.now(),
+    wantsMatch: false
   };
 
+  removeFromWaitingQueue(socket.id);
   socket.join('lobby');
   broadcastLobbyState();
 
@@ -420,15 +433,16 @@ io.on('connection', socket => {
     player.roomId = 'lobby';
     player.matchId = null;
     player.timeLastHeartbeat = now;
+    player.wantsMatch = false;
 
-    // DO NOT auto-queue on joinLobby.
+    // Absolutely no auto-queue here.
     removeFromWaitingQueue(socket.id);
+    socket.join('lobby');
 
     console.log(`Player ${player.id} joined lobby as "${player.name}"`);
 
     broadcastLobbyState();
-    // NOTE: we NO LONGER call tryStartMatches here.
-    // Matches only start when someone changes queue status or requests a rematch.
+    // Do NOT call tryStartMatches here; only on setQueueStatus / rematch.
   });
 
   socket.on('setQueueStatus', data => {
@@ -437,10 +451,12 @@ io.on('connection', socket => {
     const inQueue = !!(data && data.inQueue);
 
     if (inQueue) {
+      player.wantsMatch = true;
       if (!waitingQueue.includes(socket.id)) {
         waitingQueue.push(socket.id);
       }
     } else {
+      player.wantsMatch = false;
       removeFromWaitingQueue(socket.id);
     }
 
@@ -464,9 +480,11 @@ io.on('connection', socket => {
 
     socket.join(match.roomId);
     player.spectatingMatchId = matchId;
+    player.roomId = match.roomId; // for clarity
 
-    socket.emit('match_snapshot', {
-      timestamp: Date.now(),
+    const now = Date.now();
+    io.to(socket.id).emit('match_snapshot', {
+      timestamp: now,
       matchId: match.id,
       players: match.players.map(pid => {
         const p = safeGetPlayer(pid);
@@ -490,6 +508,9 @@ io.on('connection', socket => {
       socket.leave(match.roomId);
     }
     player.spectatingMatchId = null;
+    player.roomId = 'lobby';
+    socket.join('lobby');
+    broadcastLobbyState();
   });
 
   socket.on('heartbeat', data => {
@@ -522,6 +543,7 @@ io.on('connection', socket => {
     }
   });
 
+  // CHAT: players AND spectators in the match room may chat
   socket.on('chatMessage', data => {
     const player = safeGetPlayer(socket.id);
     if (!player || !data) return;
@@ -536,8 +558,8 @@ io.on('connection', socket => {
     const match = matches[matchId];
     if (!match || match.status !== 'active') return;
 
-    if (!match.players.includes(socket.id)) return;
-
+    // Option A: allow anyone in the match room to chat
+    // (we rely on the client using a valid matchId; no need to over-restrict)
     io.to(match.roomId).emit('chatMessage', {
       timestamp: Date.now(),
       matchId: match.id,
@@ -548,10 +570,10 @@ io.on('connection', socket => {
   });
 
   socket.on('requestRematch', data => {
-    // Simple behavior: just re-enter the queue (no special rematch pairing)
     const player = safeGetPlayer(socket.id);
     if (!player || !data) return;
     if (!waitingQueue.includes(socket.id)) {
+      player.wantsMatch = true;
       waitingQueue.push(socket.id);
       broadcastLobbyState();
       tryStartMatches();
