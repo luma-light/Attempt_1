@@ -2,6 +2,56 @@
 
 A demonstration combining **Matter.js physics engine on the server** with **p5.js rendering on the client**. This gives you production-quality physics simulation with the ease of p5.js drawing syntax!
 
+<!-- START doctoc generated TOC please keep comment here to allow auto update -->
+<!-- DON'T EDIT THIS SECTION, INSTEAD RE-RUN doctoc TO UPDATE -->
+**Table of Contents**
+
+- [What it does](#what-it-does)
+- [Why This Combination?](#why-this-combination)
+  - [Benefits:](#benefits)
+- [Running Locally](#running-locally)
+- [Features](#features)
+  - [Matter.js Physics (Server)](#matterjs-physics-server)
+  - [p5.js Rendering (Client)](#p5js-rendering-client)
+- [Architecture](#architecture)
+  - [Server (server.js)](#server-serverjs)
+  - [Client (index.html)](#client-indexhtml)
+- [Matter.js Key Concepts](#matterjs-key-concepts)
+  - [1. Bodies](#1-bodies)
+  - [2. Properties](#2-properties)
+  - [3. Forces](#3-forces)
+  - [4. Velocity](#4-velocity)
+- [Implementation Details](#implementation-details)
+  - [Explosion System](#explosion-system)
+  - [Random Object Properties](#random-object-properties)
+- [Files](#files)
+- [Performance](#performance)
+- [Testing Multiplayer](#testing-multiplayer)
+- [Running in GitHub Codespaces](#running-in-github-codespaces)
+  - [Step 1: Fork the Repository](#step-1-fork-the-repository)
+  - [Step 2: Open the Code Menu](#step-2-open-the-code-menu)
+  - [Step 3: Switch to the Codespaces Tab](#step-3-switch-to-the-codespaces-tab)
+  - [Step 4: Create a Codespace](#step-4-create-a-codespace)
+  - [Step 5: Install Dependencies](#step-5-install-dependencies)
+  - [Step 6: Start the Server](#step-6-start-the-server)
+  - [Step 7: Access the Application](#step-7-access-the-application)
+  - [Step 8: Test Multiplayer](#step-8-test-multiplayer)
+  - [Branches](#branches)
+  - [Stopping and Restarting](#stopping-and-restarting)
+  - [Troubleshooting](#troubleshooting)
+- [Advantages Over Custom Physics](#advantages-over-custom-physics)
+- [Possible Enhancements](#possible-enhancements)
+- [Matter.js Advanced Features](#matterjs-advanced-features)
+  - [Constraints (not implemented, but possible)](#constraints-not-implemented-but-possible)
+  - [Collision Events](#collision-events)
+  - [Sensors (non-solid trigger zones)](#sensors-non-solid-trigger-zones)
+- [Why Not p5.play?](#why-not-p5play)
+- [Related Examples](#related-examples)
+- [Learning Resources](#learning-resources)
+- [Credits](#credits)
+
+<!-- END doctoc generated TOC please keep comment here to allow auto update -->
+
 ## What it does
 
 🔵 **Circle Mode** - Click to spawn bouncing circles with random colors
@@ -258,18 +308,125 @@ Body.setVelocity(body, {
 5. Try explosions to see force propagation
 6. Note: All tabs show IDENTICAL physics!
 
-## Deploying to CodeSandbox
+## Running in GitHub Codespaces
 
-1. Go to https://codesandbox.io
-2. Create Node.js sandbox
-3. Upload `server.js`, `index.html`, `package.json`
-4. Click "Run"
-5. Open preview in multiple tabs
+GitHub Codespaces provides a complete development environment in your browser. Follow these steps to get started:
 
-CodeSandbox will automatically:
-- Install `matter-js` dependency
-- Set `process.env.PORT`
-- Run the physics server
+### Step 1: Fork the Repository
+
+1. Navigate to this repository on GitHub
+2. Click the **"Fork"** button in the top-right corner of the page
+3. Select your account as the destination for the fork
+4. Wait for GitHub to create your copy of the repository
+
+_[Screenshot placeholder: Show the Fork button location and the fork creation dialog]_
+
+### Step 2: Open the Code Menu
+
+1. On your forked repository page, click the green **"Code"** button
+2. This will open a dropdown menu with several options
+
+_[Screenshot placeholder: Show the Code button and opened dropdown menu]_
+
+### Step 3: Switch to the Codespaces Tab
+
+1. In the Code dropdown, click the **"Codespaces"** tab
+2. If you don't see this tab, make sure you're signed into GitHub and have Codespaces access
+
+_[Screenshot placeholder: Show the Codespaces tab in the Code dropdown]_
+
+### Step 4: Create a Codespace
+
+1. Click the **"Create codespace on main"** button (or whichever branch you want to use)
+2. GitHub will start creating your development environment
+3. Wait 30-60 seconds for the Codespace to initialize
+4. A VS Code interface will appear in your browser
+
+_[Screenshot placeholder: Show the "Create codespace" button and the loading screen]_
+
+### Step 5: Install Dependencies
+
+Once your Codespace opens:
+
+1. A terminal should automatically open at the bottom
+2. If not, open a new terminal: **Terminal → New Terminal** from the menu
+3. Run the installation command:
+   ```bash
+   npm install
+   ```
+4. Wait for all dependencies to install (matter-js, express, socket.io)
+
+_[Screenshot placeholder: Show terminal with npm install running]_
+
+### Step 6: Start the Server
+
+1. In the terminal, run:
+   ```bash
+   npm start
+   ```
+2. You should see output like:
+   ```
+   Listening on 3000
+   Matter.js physics engine initialized
+   World: 800x600
+   ```
+
+_[Screenshot placeholder: Show terminal with server running]_
+
+### Step 7: Access the Application
+
+1. A notification will appear saying **"Your application running on port 3000 is available"**
+2. Click **"Open in Browser"** in the notification
+   - If you miss the notification, look for the **"Ports"** tab at the bottom of VS Code
+   - Find port 3000 and click the globe icon to open it in your browser
+3. The application will open in a new browser tab
+
+_[Screenshot placeholder: Show the port forwarding notification and the Ports tab]_
+
+### Step 8: Test Multiplayer
+
+1. With the application open, enter a username and room name, then click "Join Room"
+2. Open 2-3 more browser tabs/windows with the same Codespace URL
+3. Join the same room with different usernames
+4. Try spawning objects in different tabs - they should appear synchronized across all tabs!
+
+_[Screenshot placeholder: Show multiple browser tabs with the application running]_
+
+### Branches
+
+This repository has multiple branches for different use cases:
+
+- **`main`** - Full Matter.js physics demo with explosions
+- **`rooms-starter`** - Minimal starter with room management (max players per room)
+- **`no-rooms-starter`** - Minimal starter without rooms (all players in one space)
+
+To switch branches in your Codespace:
+1. Click the branch name in the bottom-left corner of VS Code
+2. Select a different branch from the list
+3. Run `npm install` and `npm start` again
+
+### Stopping and Restarting
+
+- **To stop the server:** Press `Ctrl+C` in the terminal
+- **To restart:** Run `npm start` again
+- **To close your Codespace:** Close the browser tab (it will auto-sleep after inactivity)
+- **To reopen your Codespace:** Go to github.com, click your profile → "Your codespaces" → select your codespace
+
+### Troubleshooting
+
+**Port not forwarding:**
+- Check the "Ports" tab at the bottom of VS Code
+- Make sure port 3000 shows "Visibility: Public"
+- Click the globe icon next to port 3000 to open in browser
+
+**Server won't start:**
+- Make sure you ran `npm install` first
+- Check for error messages in the terminal
+- Try stopping (`Ctrl+C`) and restarting (`npm start`)
+
+**Changes not showing:**
+- After editing code files, stop the server (`Ctrl+C`) and restart it (`npm start`)
+- Then hard refresh your browser: `Ctrl+Shift+R` (Windows/Linux) or `Cmd+Shift+R` (Mac)
 
 ## Advantages Over Custom Physics
 
