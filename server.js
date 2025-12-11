@@ -1,11 +1,3 @@
-// server.js
-// Centralized server for "Rock-Paper-Scissors Coliseum"
-// -----------------------------------------------------
-// How to run:
-// 1) npm install         (express + socket.io v2 already in package.json)
-// 2) node server.js
-// 3) Open http://localhost:3000 in multiple tabs to test
-
 const express = require('express');
 const http = require('http');
 const socketIO = require('socket.io'); // v2 style require
