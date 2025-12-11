@@ -1,17 +1,16 @@
 <!-- 
-  Author: Matthew Armento
-  Course: IMM270 Networked Games
-  Professor: Professor Fishburn
+Student: Matthew Armento
+Course: IMM270 Networked Games
+Professor: Professor Fishburn
 
-  File: index.html (client for "RPS Coliseum")
-
-  This is the client-side half of the game:
-  - p5.js handles drawing, layout, and input on a full-window canvas.
-  - socket.io connects us to the centralized Node.js server.
-  - We also have a single HTML input box for in-match chat.
-  The server is the authority. This file is mostly about:
-  - Rendering whatever the server tells us.
-  - Sending back small, intentional messages: moves, chat, queue requests, etc.
+This is the client-side half of my game:
+- p5.js handles drawing, layout, and input on a full-window canvas
+- socket.io connects us to the centralized Node.js server
+- We also have a single HTML input box for in-match chat
+The server is the authority (obviously). That said, THIS file is mostly about:
+- Rendering whatever the server tells us (i.e. taking messages).
+- Sending back small, intentional messages: moves, chat, queue requests, etc.
+  - Almost exclusively small player-side actions and UI/UX stuff
 -->
 
 <!DOCTYPE html>
@@ -22,41 +21,36 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <!-- p5.js core library for drawing and interaction -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
-  <!-- p5.sound library for audio (optional; game still works if this fails) -->
+  <!-- p5.sound library for audio (I discovered this is optional, and the game still works if this fails) -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/addons/p5.sound.min.js"></script>
   <!-- socket.io client served by our Node/Express server -->
   <script src="/socket.io/socket.io.js"></script>
   <style>
-    /* 
-      Basic page styling.
-      The game is meant to be full-window and immersive,
-      so we remove scrollbars and use a dark, coliseum-feeling gradient.
-    */
+    /* Basic page styling. The game is meant to be full-window and immersive, so we remove 
+    the need for scrollbars and use a dark, sleek gradiant of colors. */
     body {
       margin: 0;
       padding: 0;
-      background: radial-gradient(circle at top, #333 0, #111 55%);
+      background: radial-gradient(circle at top, #181616 0, #111 55%);
       color: #eee;
       font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       overflow: hidden;
     }
 
     canvas {
-      display: block; /* Avoids extra whitespace around canvas in some browsers */
+      display: block; /* This helps avoid extra whitespace around canvas in some browsers, because TOO much negative space
+      is bad :/ */
     }
 
-    /* 
-      This is the chat input that sits “on top” of the canvas.
-      It is hidden by default and only appears when we are in a match or spectating.
-      The p5 code manually repositions/resizes this element every frame.
-    */
+    /* This is the chat input that sits 'on top' of the canvas. It is hidden by default and only appears when we are in a match or spectating.
+    The p5 code manually repositions/resizes this element every frame. It effectively does nothing until interacted with */
     #chat-input {
       position: fixed;
       bottom: 40px;
       padding: 6px 10px;
       font-size: 13px;
       border-radius: 6px;
-      border: 1px solid #444;
+      border: 1px solid #181616;
       background: rgba(10, 10, 10, 0.85);
       color: #eee;
       outline: none;
@@ -65,49 +59,43 @@
   </style>
 </head>
 <body>
-  <!-- 
-    The only DOM element outside the canvas: the chat box.
-    Everything else (buttons, info, visuals) is drawn inside p5’s canvas.
-    Keeping the chat as a real HTML input makes typing feel “normal”.
-  -->
+  <!-- This is the only DOM element outside the canvas, the chat box. Everything else (buttons, info, visuals) is drawn 
+  inside p5’s canvas. Keeping the chat as a real HTML input makes typing feel normal. It also is a significantly smaller 
+  pain in the ass -->
   <input id="chat-input" type="text" placeholder="Type message..." />
 
   <script>
-    // --------------------------------------------------------------------
-    // Core timing constant for the client’s round timer visualization.
-    // The server has its own ROUND_TIME_LIMIT; we mirror that here visually.
-    // We still trust the server for actual round resolution; this is just UI.
-    // --------------------------------------------------------------------
+    //Core timing constant for the client’s round-timer visualization
+    //The server has its own ROUND_TIME_LIMIT though, we just mirror that here visually
+    //We still trust the server for actual round resolution too, this is JUST UI, and I cannot hope to make that clearer
     const ROUND_TIME_MS = 30000; // 30s visual timer
 
-    // --------------------------------------------------------------------
-    // Asset variables for images and sounds.
-    // These start as undefined and will be filled in during preload().
-    // --------------------------------------------------------------------
+    //Asset variables for images and sounds
+    //These start as undefined and will be filled in during preload() later :]
+    //I love my little gifs
     let imgRock, imgPaper, imgScissors;
     let sfxWin, sfxLose, sfxTie, sfxMatchStart, sfxAmbient;
 
-    // Browsers require a user gesture before audio can play.
-    // We track whether we've “unlocked” audio yet (by clicking/pressing a key).
+    //Browsers require a user gesture before audio can play, so we track whether we've “unlocked” audio yet 
+    //(by clicking/pressing a key).
     let audioStarted = false;
 
-    // --------------------------------------------------------------------
-    // preload(): p5 lifecycle function that runs before setup().
-    // Here we load all images and (if available) sound assets.
-    // --------------------------------------------------------------------
+    //the preload() function is a p5 lifecycle function that runs before setup()
+    //Here, we load all images and (god willing) sound assets so that they are already in the code to be referenced later
     function preload() {
-      // Load the three animated GIFs that represent the R, P, and S moves.
+      //Loading my three animated GIFs that represent the R, P, and S moves
       imgRock = loadImage('IMM270_Rock.gif');
       imgPaper = loadImage('IMM270_Paper.gif');
       imgScissors = loadImage('IMM270_Scissors.gif');
 
-      // If the sound library is available, tell it which audio formats we might use.
+      //Since the sound library is available, this tells it which audio formats we are using
       if (typeof soundFormats === 'function') {
         soundFormats('mp3', 'wav');
       }
 
-      // Only try to load sounds if p5.sound actually exists.
-      // This makes the game more robust on environments where audio fails.
+      //Only try to load sounds if p5.sound actually exists, this is important because the code WILL try to run it even if 
+      //p5.sound is inactive or adbsent, which breaks your code until you resolve the issue. This makes the game more robust
+      //on environments where audio fails (wherever that might be)
       if (typeof loadSound === 'function') {
         sfxWin = loadSound('IMM270_Win_Sound.mp3');
         sfxLose = loadSound('IMM270_Lose_Sound.wav');
@@ -119,159 +107,154 @@
       }
     }
 
-    // --------------------------------------------------------------------
-    // Client-side global state constants and variables
-    // These mirror server-side structures in a simplified, read-only way.
-    // --------------------------------------------------------------------
-
-    // socket: our live connection to the Node/Express/socket.io server.
+    //_Client-side global state constants and variables_
+    //These mirror server-side structures in a simplified, read-only way
+    //socket: our live connection to the Node/Express/socket.io server, and effectively a 'heart' to the game's core function
     let socket;
-    // connectionStatus: a human-readable string we show at the top of the screen.
+    // connectionStatus: a human-readable string we show at the top of the screen, green for good, red for bad
+    // (green = good connections, red = disconnection)
     let connectionStatus = 'connecting';
 
-    // myPlayer: a local snapshot of “who we are” on this client.
-    // The server has a full copy; we track enough here to draw the UI.
+    //myPlayer: a local snapshot of “who we are” on this client. It is my final's verus of 'me' versus 'we' from the midterm
+    //The server has a full copy that information so we track it here to draw the UI
     let myPlayer = {
-      id: null,              // assigned by socket.io when we connect
-      name: null,            // chosen from prompt in setup()
-      preferredColor: '#ff00ff', // cosmetic, could be used for tinting UI/sprites
-      totalWins: 0,          // updated based on lobbyState from server
+      id: null, //an ID is assigned by socket.io when we connect
+      name: null, //a name is chosen from prompt in setup()
+      preferredColor: '#ff00ff', //it's not really referenced again ever, but this is 
+      // just cosmetic, could be used for tinting UI/sprites
+      totalWins: 0, //total wins are updated based on lobbyState from server
       totalLosses: 0
     };
 
-    // lobbyState: describes who’s in the lobby and what matches are currently active.
-    // This object is updated whenever we receive a 'lobbyState' event from the server.
+    //lobbyState: the check which describes who’s in the lobby and what matches are currently active
+    //This object is updated whenever we receive a 'lobbyState' event from the server, so it shouldn't be too terribly often
     let lobbyState = {
-      spectators: [],        // list of players currently in the lobby room
-      activeMatches: [],     // metadata for each running match
+      spectators: [], // spectators array makes a list of players currently in the lobby room
+      activeMatches: [], // activeMatches serves as metadata for each running match
       globalStats: { totalMatchesPlayed: 0, totalRoundsPlayed: 0 }
     };
 
-    // uiMode: simple state machine for the current “screen” we’re drawing.
-    // 'lobby' -> main hall
-    // 'match' -> actual game where we are one of the players
-    // 'spectate' -> watching an ongoing match as a spectator
-    // 'settings' -> volume configuration screen
+    //uiMode: basically it's p5.js talk for the picture, a simple state machine for the current “screen” we’re drawing
+    //'lobby' -> main hall
+    //'match' -> actual game where we are one of the players
+    //'spectate' -> watching an ongoing match as a spectator
+    //'settings' -> volume configuration screen
+    //Each of these aspects of the code form the sturdiest grounding pillars of my code's design
     let uiMode = 'lobby';
 
-    // Whether this client has requested to be in the match queue.
-    // This is the client’s view of “I want to be in a game”.
+    //Questions whether this client has requested to be in the match queue. This is the client’s view of “I want to be in a game”
     let isInQueue = false;
 
-    // currentMatch: a local representation of whichever match we are involved in.
-    // We rely on the server’s events to keep this object up to date.
+    //currentMatch: a statement and a local representation of whichever match we are involved in. We rely on the server’s events to keep this object up to date
     let currentMatch = null;
 
-    // viewingMatchAsSpectator: true when we are not a match participant, but are in the match room.
+    //viewingMatchAsSpectator: the function is true when we are not a match participant, but are in the match room ONLY
     let viewingMatchAsSpectator = false;
 
-    // turnInfo: information about whose “turn” it is and when the timer expires.
-    // This is calculated from server timestamps so our UI can smoothly animate the bar.
+    //turnInfo: information about whose “turn” it is and when the timer expires
+    //This is calculated from server timestamps so our UI can smoothly animate the bar
     let turnInfo = {
-      holderId: null,        // which player currently “owns” the turn (for future use)
-      expiresAt: 0,          // local Date.now() time when we expect the bar to hit 0
-      durationMs: ROUND_TIME_MS // how many ms correspond to a full bar
+      holderId: null, //which player currently “owns” the turn (for future use)
+      expiresAt: 0, //local Date.now() time when we expect the bar to hit 0
+      durationMs: ROUND_TIME_MS //how many ms correspond to a full bar
     };
 
-    // lastRoundResult: what happened in the most recent resolved round.
-    // This powers the “Last Round” panel in the center of the match UI.
+    //lastRoundResult: what happened in the most recent resolved round. This powers the “Last Round” panel in the 
+    //center of the match UI
     let lastRoundResult = null;
 
-    // Arrays of button definitions for click detection.
-    // rpsButtons is for Rock/Paper/Scissors (match UI).
+    //Some arrays of button definitions for click detection will follow shortly
+    //rpsButtons is for Rock/Paper/Scissors (match UI)
     let rpsButtons = [];
 
-    // lobbyButtons holds bounding boxes for lobby buttons and match rows.
+    //lobbyButtons holds bounding boxes for lobby buttons and match rows
     let lobbyButtons = {
       queue: null,
       spectateRandom: null,
       settings: null,
-      matches: []  // each entry describes a row for an active match
+      matches: [] //each match entry describes a row for an active match
     };
 
-    // When spectating, this holds the clickable rectangle for “Back to Lobby”.
+    //When spectating, this holds the clickable rectangle for “Back to Lobby”
     let spectateBackButton = null;
 
-    // matchChatMessages: logs messages from players + spectators in the current match.
-    // The client appends new messages and renders the most recent subset.
+    //matchChatMessages: this logs messages from players and spectators in the current match. The client appends new messages
+    // and renders the most recent subset
     let matchChatMessages = [];
 
-    // chatInputEl: direct reference to the HTML <input id="chat-input"> for easy access.
+    //chatInputEl: this is a direct reference to the HTML <input id="chat-input"> for easy access
     let chatInputEl = null;
 
-    // Volume-related variables for the settings screen and audio.
-    let volumeLevel = 0.8;   // a number between 0 and 1
-    let volumeSlider = null; // geometry describing the slider track for hit detection
+    //Volume-related variables for the settings screen and audio
+    let volumeLevel = 0.8; //a number between 0 and 1
+    let volumeSlider = null; //geometry describing the slider track for hit detection
     let backFromSettingsButton = null;
     let volumeDragging = false;
 
-    // --------------------------------------------------------------------
-    // Layout helper
-    // This function encapsulates the layout split between chat and game area.
-    // If our window or design changes, we can tweak this one place.
-    // --------------------------------------------------------------------
+    //_Layout helpers_
+    //This function encapsulates the layout split between chat and game area. If our window or design 
+    //changes, we can tweak this one place
     function getLayout() {
-      const chatWidth = width / 5; // left fifth of the screen reserved for chat panel
-      const gameX = chatWidth;     // game canvas area starts right after chat panel
-      const gameWidth = width - chatWidth; // remaining width for match visuals
+      const chatWidth = width / 5; //left fifth of the screen reserved for chat panels because i think it's pretty
+      const gameX = chatWidth; //makes sure game canvas area starts right after chat panel
+      const gameWidth = width - chatWidth; //remaining width for match visuals (i.e. organization)
       return { chatWidth, gameX, gameWidth };
     }
 
-    // --------------------------------------------------------------------
-    // setup(): p5 lifecycle function called once after preload().
-    // Here we:
-    //  - create the canvas
-    //  - ask the user for their name
-    //  - hook up the chat input
-    //  - connect to the server and start sending heartbeats.
-    // --------------------------------------------------------------------
+    //setup(): p5 lifecycle function called once after preload()
+    //Here we:
+    // - create the canvas
+    // - ask the user for their name
+    // - hook up the chat input
+    // - connect to the server and start sending heartbeats
     function setup() {
-      // Create a full-browser canvas; everything visible is drawn onto this.
+      //Creates a full-browser canvas where everything visible is drawn onto this
       createCanvas(windowWidth, windowHeight);
 
-      // Ask the player to name their gladiator. Fallback if they leave it blank.
+      //Asks the player to name their gladiator. Fallback if they leave it blank too
       let name = prompt("Enter your gladiator name:", "Player");
       if (!name || !name.trim()) {
         name = "Player";
       }
-      // Trim whitespace and limit to 20 characters so the UI doesn’t explode.
+      //Trims whitespace and limit to 20 characters so the UI doesn’t explode (this is for MY sanity, and you should NEVER need
+      //a 20-character username!)
       myPlayer.name = name.trim().slice(0, 20);
 
-      // Give this client a bright-ish random color to make them feel unique.
+      //Gives this client a bright-ish random color to make them feel unique. Ultimately, I do not believe it does much
       myPlayer.preferredColor = randomColor();
 
-      // Grab the chat input from the DOM and add a key handler for Enter.
+      //Grabs the chat input from the DOM and add a key handler for Enter
       chatInputEl = document.getElementById('chat-input');
       chatInputEl.addEventListener('keydown', e => {
-        // Hitting Enter should send the chat instead of inserting a newline.
+        //Makes sure that hitting Enter should send the chat instead of inserting a newline
         if (e.key === 'Enter') {
           e.preventDefault();
           sendChatMessage();
         }
       });
 
-      // Start the socket.io connection and hook up all server event handlers.
+      //Starts the socket.io connection and hook up all server event handlers
       initSocket();
 
-      // Kick off a heartbeat loop, so the server knows we’re alive every few seconds.
+      //Kicks off a heartbeat loop, so the server knows we’re alive every few seconds
       setupHeartbeat();
 
-      // Set default font and alignment for drawing text in our HUD/UI.
+      //Sets default font and alignment for drawing text in my HUD/UI
       textFont('system-ui');
       textAlign(LEFT, TOP);
 
-      // Initialize audio volumes (if audio is available).
+      //Initializes audio volumes if/when audio is discovered in the files
       setVolumeLevel(volumeLevel);
     }
 
-    // windowResized(): built-in p5 callback when the browser window size changes.
-    // We resize the canvas so the game continues to fill the entire viewport.
+    //windowResized(): this is a built-in p5 callback when the browser window size changes. We resize the canvas so the game 
+    //continues to fill the entire viewport
     function windowResized() {
       resizeCanvas(windowWidth, windowHeight);
     }
 
-    // randomColor(): helper to generate a bright-ish random RGB color as a hex string.
-    // This makes players feel more individualized (even though we don't fully lean on it).
+    //randomColor(): just a helper to generate a bright-ish random RGB color as a hex string. This makes players feel more 
+    //individualized (even though we don't fully lean on it, I ran out of time near the end and had other projects to work on)
     function randomColor() {
       const r = floor(random(80, 255)).toString(16).padStart(2, '0');
       const g = floor(random(80, 255)).toString(16).padStart(2, '0');
@@ -279,29 +262,27 @@
       return `#${r}${g}${b}`;
     }
 
-    // --------------------------------------------------------------------
-    // initSocket(): sets up the socket.io connection and defines all event handlers.
-    // This is the main “bridge” between client and server.
-    // --------------------------------------------------------------------
+    //initSocket(): this sets up the socket.io connection and defines all event handlers
+    //This is the main “bridge” between client and server
     function initSocket() {
-      // If socket.io client failed to load at all, we can’t do networking.
-      // We set the status to disconnected so the HUD warns the player.
+      //If socket.io client failed to load at all, we can’t do networking
+      //We set the status to disconnected so the HUD warns the player
       if (typeof io !== 'function') {
         connectionStatus = 'disconnected';
         console.error('socket.io client failed to load.');
         return;
       }
 
-      // Connect to the server at the same origin that served index.html.
+      //Connects to the server at the same origin that served index.html
       socket = io();
       connectionStatus = 'connecting';
 
-      // When socket.io connects successfully, we get our socket.id.
+      //When socket.io connects successfully, we get our socket.id
       socket.on('connect', () => {
         connectionStatus = 'connected';
         myPlayer.id = socket.id;
 
-        // Inform the server we want to be in the lobby and share our name + color.
+        //Inform the server we want to be in the lobby and share our name and color
         socket.emit('joinLobby', {
           name: myPlayer.name,
           preferredColor: myPlayer.preferredColor,
@@ -309,21 +290,21 @@
         });
       });
 
-      // If we disconnect (server down, wifi off, etc.), show that in the HUD.
+      //If we disconnect (server down, wifi off, etc.), show that in the HUD
       socket.on('disconnect', () => {
         connectionStatus = 'disconnected';
       });
 
-      // lobbyState: the server’s “here is what the lobby looks like right now”.
+      //lobbyState: this is the server’s “here is what the lobby looks like right now”
       socket.on('lobbyState', data => {
         if (!data) return;
 
-        // Replace our local snapshot with what the server just told us.
+        //Replaces our local snapshot with what the server just told us
         lobbyState.spectators = data.spectators || [];
         lobbyState.activeMatches = data.activeMatches || [];
         lobbyState.globalStats = data.globalStats || lobbyState.globalStats;
 
-        // Pull our own persistent stats (W/L) out of the lobby spectators list.
+        //Pulls our own persistent stats (W/L) out of the lobby spectators list
         if (myPlayer.id) {
           const self = lobbyState.spectators.find(p => p.id === myPlayer.id);
           if (self) {
@@ -332,21 +313,22 @@
           }
         }
 
-        // If we are not in a match or the settings screen, make sure we’re on the lobby UI.
+        //If we are not in a match or the settings screen, this'll make sure we’re on the lobby UI. I emphasized this because
+        //it was a persistent issue with my midterm, and started to become an issue in this project too early on
         if (!currentMatch && uiMode !== 'settings') {
           uiMode = 'lobby';
         }
       });
 
-      // match_start: the server has matched us with an opponent and a new game begins.
+      //match_start: the server has matched us with an opponent and a new game begins
       socket.on('match_start', data => {
         if (!data) return;
 
-        // Switch to match UI and mark that we are *not* spectating.
+        //Switches to match UI and mark that we are NOT spectating
         uiMode = 'match';
         viewingMatchAsSpectator = false;
 
-        // Build up our local representation of the match from server data.
+        //Builds up our local representation of the match from server data
         currentMatch = {
           matchId: data.matchId,
           players: data.players || [],
@@ -355,29 +337,28 @@
           startingPlayer: data.startingPlayer
         };
 
-        // Reset per-round local flags and clear last result + chat.
+        //Resets per-round local flags and clears last result and chat (so that data doesn't get unnecessarily stored)
         hasSubmittedMoveThisRound = false;
         lastRoundResult = null;
         matchChatMessages = [];
 
-        // Initialize our local timer bar using a full 30 seconds.
-        // Future turnUpdate events will correct the timing and progress.
+        //Initializes our local timer bar using a full 30 seconds. Future turnUpdate events will correct the timing and progress.
         turnInfo.holderId = data.startingPlayer;
         turnInfo.durationMs = ROUND_TIME_MS;
         turnInfo.expiresAt = Date.now() + ROUND_TIME_MS;
 
-        // Play the match-start sound (if loaded) to give feedback that something big happened.
+        //Plays the match-start sound (if loaded) to give feedback that something big happened
         if (sfxMatchStart && typeof sfxMatchStart.isLoaded === 'function' && sfxMatchStart.isLoaded()) {
           sfxMatchStart.setVolume(volumeLevel);
           sfxMatchStart.play();
         }
       });
 
-      // match_snapshot: server tells us “here’s the state of this match you’re spectating”.
+      //match_snapshot: for when the server tells us “here’s the state of this match you’re spectating”
       socket.on('match_snapshot', data => {
         if (!data) return;
 
-        // Build the match object using the info sent by the server.
+        //Builds the match object using the info sent by the server
         currentMatch = {
           matchId: data.matchId,
           players: data.players || [],
@@ -390,34 +371,34 @@
         lastRoundResult = null;
         matchChatMessages = [];
 
-        // Turn info is sent in server time; we convert it to a local “remaining ms”.
+        //Turns info is sent in server time; we convert it to a local “remaining ms”
         const expiresAtServer = data.turnInfo?.expiresAt || 0;
         const serverTimestamp = data.timestamp || 0;
         const remainingMs = Math.max(0, expiresAtServer - serverTimestamp);
 
-        // Save the current holder and duration for drawing a correct progress bar.
+        //Saves the current holder and duration for drawing a correct progress bar
         turnInfo.holderId = data.turnInfo?.holderId || null;
         turnInfo.durationMs = data.turnInfo?.durationMs || remainingMs || ROUND_TIME_MS;
-        // expiresAt is our local time when the bar should hit zero.
+        //expiresAt is our local time when the bar should hit zero (i.e. what it finds for us when the moment the clock strikes is)
         turnInfo.expiresAt = Date.now() + remainingMs;
       });
 
-      // turnUpdate: server says “the turn or timer has changed; here’s the new deadline”.
+      //turnUpdate: when the server says “the turn or timer has changed, here’s the new deadline”
       socket.on('turnUpdate', data => {
         if (!data) return;
         if (!currentMatch || currentMatch.matchId !== data.matchId) return;
 
-        // Work out how much time is left based on the server timestamp.
+        //Works out how much time is left based on the server timestamp
         const expiresAtServer = data.expiresAt || 0;
         const serverTimestamp = data.timestamp || 0;
         const remainingMs = Math.max(0, expiresAtServer - serverTimestamp);
 
-        // Update our local view of whose turn it is and the total duration of this turn.
+        //Updates our local view of whose turn it is and the total duration of this turn
         turnInfo.holderId = data.holderId;
         turnInfo.durationMs = data.durationMs || remainingMs || ROUND_TIME_MS;
         turnInfo.expiresAt = Date.now() + remainingMs;
 
-        // A new turn means we can submit a move again.
+        //A new turn means we can submit a move again, so this marks that differently
         hasSubmittedMoveThisRound = false;
 
         if (data.round != null) {
@@ -425,16 +406,16 @@
         }
       });
 
-      // round_result: the server has just resolved a round and knows who won (or if it was a tie).
+      //round_result: when the server has just resolved a round and knows who won (or if it was a tie)
       socket.on('round_result', data => {
         if (!data) return;
         if (!currentMatch || currentMatch.matchId !== data.matchId) return;
 
-        // Replace the local score and round with the authoritative server state.
+        //Replaces the local score and round with the authoritative server state
         currentMatch.scores = data.scores;
-        currentMatch.round = data.round; // ensures the round label updates on screen
+        currentMatch.round = data.round; //ensures the round label updates on screen
 
-        // Save a compact description of the last round for the “Last Round” panel.
+        //Saves a compact description of the last round for the “Last Round” panel
         lastRoundResult = {
           round: data.round,
           winnerId: data.winnerId,
@@ -444,7 +425,7 @@
         };
         hasSubmittedMoveThisRound = false;
 
-        // Decide which sound to play based on whether we personally won, lost, or tied.
+        //Decides which sound to play based on whether we personally won, lost, or tied (unique client side)
         const myId = socket ? socket.id : null;
         if (!data.winnerId) {
           if (sfxTie && typeof sfxTie.isLoaded === 'function' && sfxTie.isLoaded()) {
@@ -464,7 +445,7 @@
         }
       });
 
-      // game_end: the server says the match is completely over.
+      //game_end: when the server says the match is completely over
       socket.on('game_end', data => {
         if (!data) return;
         if (!currentMatch || currentMatch.matchId !== data.matchId) return;
@@ -472,20 +453,20 @@
         const myId = socket ? socket.id : null;
         const amParticipant = currentMatch.players?.some(p => p.id === myId);
 
-        // Clear all match-related state on the client.
+        //Clears all match-related state on the client
         currentMatch = null;
         lastRoundResult = null;
         matchChatMessages = [];
         viewingMatchAsSpectator = false;
         uiMode = 'lobby';
 
-        // If we were playing (not just spectating), also reset our queue flag.
+        //If we were playing (not just spectating), also resets our queue flag
         if (amParticipant) {
           isInQueue = false;
         }
       });
 
-      // chatMessage: whenever the server broadcasts a chat line, append it to our log.
+      //chatMessage: whenever the server broadcasts a chat line, this appends it to my log
       socket.on('chatMessage', data => {
         if (!data) return;
 
@@ -496,17 +477,15 @@
           fromId: data.fromId
         });
 
-        // To keep memory reasonable, we drop older messages beyond 200 total.
+        //To keep memory reasonable, I dropped older messages beyond 200 total
         if (matchChatMessages.length > 200) {
           matchChatMessages.shift();
         }
       });
     }
 
-    // --------------------------------------------------------------------
-    // Heartbeat: sends a small “I am alive” ping to the server every few seconds.
-    // This helps the server detect tabs that have silently gone away.
-    // --------------------------------------------------------------------
+    //Heartbeat (ugh): sends a small “I am alive!” ping to the server every few seconds This helps the server detect tabs that
+    //have silently gone away.
     function setupHeartbeat() {
       setInterval(() => {
         if (socket && socket.connected) {
@@ -515,22 +494,20 @@
       }, 5000);
     }
 
-    // Tracks whether this client has already submitted a move this round.
-    // This prevents rapid double-clicking from spamming the server.
+    //Tracks whether this client (the one running this iteration of the code) has already submitted a move this round. This prevents
+    //rapid double-clicking from spamming the server (yeah take that you impatient FUCKS!!!)
     let hasSubmittedMoveThisRound = false;
 
-    // --------------------------------------------------------------------
-    // draw(): main p5 drawing loop, called many times per second.
-    // This function is “the screen” and chooses what to draw based on uiMode.
-    // --------------------------------------------------------------------
+    //draw(): finally, the main p5 drawing loop, called many times per second every second (about 60 fps)
+    //This function is “the screen” and chooses what to draw based on uiMode
     function draw() {
-      // Clear the background with a dark color each frame.
+      //Clears the background with a dark color each frame
       background(15);
 
-      // Always draw connection and player info at the very top.
+      //Always draws connection and player info at the very top
       drawConnectionStatusBar();
 
-      // Draw the current screen’s main content.
+      //Draws the current screen’s main content
       if (uiMode === 'lobby') {
         drawLobbyUI();
       } else if (uiMode === 'match' || uiMode === 'spectate') {
@@ -539,16 +516,14 @@
         drawSettingsUI();
       }
 
-      // Draw a one-line help text across the bottom of the window.
+      //Draws a one-line help text across the bottom of the window
       drawFooterInstructions();
 
-      // Make sure the chat input is positioned and visible only when appropriate.
+      //Makes sure the chat input is positioned and visible only when appropriate
       updateChatInputVisibility();
     }
 
-    // --------------------------------------------------------------------
-    // drawConnectionStatusBar(): top HUD that shows connection and player record.
-    // --------------------------------------------------------------------
+    //drawConnectionStatusBar(): the top HUD that shows connection and player record
     function drawConnectionStatusBar() {
       const h = 32;
       noStroke();
@@ -556,23 +531,23 @@
       rect(0, 0, width, h);
 
       let statusText = 'Connecting...';
-      let statusColor = color(255, 215, 0); // yellow while waiting
+      let statusColor = color(255, 215, 0);
 
       if (connectionStatus === 'connected') {
         statusText = 'Connected';
-        statusColor = color(0, 255, 0); // green when good
+        statusColor = color(0, 255, 0); //green when good :D
       } else if (connectionStatus === 'disconnected') {
         statusText = 'Disconnected (check server & console)';
-        statusColor = color(255, 80, 80); // red when broken
+        statusColor = color(255, 80, 80); //red when broken D:
       }
 
-      // Left side: network status.
+      //Left side: network status
       fill(statusColor);
       textSize(14);
       textAlign(LEFT, CENTER);
       text(statusText, 16, h / 2);
 
-      // Right side: player name and W/L record (if we have any).
+      //Right side: player name and W/L record (if we have any)
       fill(200);
       textAlign(RIGHT, CENTER);
       const recordPart =
@@ -586,10 +561,8 @@
       );
     }
 
-    // --------------------------------------------------------------------
-    // drawLobbyUI(): renders the main hall lobby.
-    // Contains queue button, spectate button, settings, and lists of players/matches.
-    // --------------------------------------------------------------------
+    //drawLobbyUI(): renders the main hall lobby
+    //Contains queue button, spectate button, settings, and lists of players/matches
     function drawLobbyUI() {
       const padding = 24;
       const topOffset = 40;
@@ -607,7 +580,7 @@
         topOffset + 40
       );
 
-      // Show global stats to make the space feel lived-in and persistent.
+      //Shows global stats to make the space feel lived-in and persistent
       const statsY = topOffset + 80;
       fill(180);
       textAlign(CENTER, TOP);
@@ -623,7 +596,7 @@
       const centerX = width / 2;
       const buttonsBaseY = statsY + 40;
 
-      // --- Queue button (join/leave) ---
+      //Queue button
       const queueX = centerX - buttonWidth - 16;
       const queueY = buttonsBaseY;
       lobbyButtons.queue = { x: queueX, y: queueY, w: buttonWidth, h: buttonHeight };
@@ -633,7 +606,7 @@
         mouseY >= queueY && mouseY <= queueY + buttonHeight;
 
       noStroke();
-      // Color changes depending on whether we are hovering and whether we are in the queue.
+      //Color changes depending on whether we are hovering and whether we are in the queue
       fill(isHoverQueue ? (isInQueue ? color(130, 60, 60) : color(80, 130, 80))
                         : (isInQueue ? color(90, 40, 40) : color(40, 90, 40)));
       rect(queueX, queueY, buttonWidth, buttonHeight, 10);
@@ -647,7 +620,7 @@
         queueY + buttonHeight / 2
       );
 
-      // --- Spectate random match button ---
+      //Spectate random match button (as harder to figure out than it looks I SWEAR)
       const specX = centerX + 16;
       const specY = buttonsBaseY;
       lobbyButtons.spectateRandom = { x: specX, y: specY, w: buttonWidth, h: buttonHeight };
@@ -659,7 +632,7 @@
 
       let specColor;
       if (!hasMatches) {
-        // When there are no ongoing matches, the button looks “disabled”.
+        //When there are no ongoing matches, the button looks “disabled” (because it is)
         specColor = color(30);
       } else {
         specColor = specHover ? color(80, 80, 130) : color(40, 40, 90);
@@ -674,7 +647,7 @@
         specY + buttonHeight / 2
       );
 
-      // --- Settings button in the top-right corner ---
+      //Settings button in the top-right corner
       const settingsWidth = 110;
       const settingsHeight = 26;
       const settingsX = width - settingsWidth - padding;
@@ -692,7 +665,7 @@
       fill(220);
       text("⚙ Settings", settingsX + settingsWidth / 2, settingsY + settingsHeight / 2);
 
-      // --- Left-hand list: Gladiators in the lobby ---
+      //Gladiators in the lobby
       const listY = buttonsBaseY + 80;
       textAlign(LEFT, TOP);
       fill(220);
@@ -702,14 +675,14 @@
       const lineHeight = 20;
       textSize(14);
       let y = listY + 28;
-      // For each spectator (lobby member), show name and W/L record.
+      //For each spectator (lobby member), show name and W/L record to the left
       lobbyState.spectators.forEach((p, i) => {
         const label = `${p.name}  (W: ${p.totalWins || 0}, L: ${p.totalLosses || 0})`;
         fill(180);
         text(label, padding, y + i * lineHeight);
       });
 
-      // --- Right-hand list: Active matches that can be spectated ---
+      //Active matches that can be spectated
       const matchesX = width * 0.5 + 40;
       fill(220);
       textSize(18);
@@ -743,7 +716,7 @@
           rowY + 4
         );
 
-        // Save a clickable region for each active match row so we can spectate it on click.
+        //Saves a clickable region for each active match row so we can spectate it on click.
         lobbyButtons.matches.push({
           x: matchesX,
           y: rowY,
@@ -754,12 +727,9 @@
       });
     }
 
-    // --------------------------------------------------------------------
-    // drawMatchUI(): draws both the “playing” and “spectating” views of a match.
-    // It shows player names, scores, the round timer, last round info, and chat.
-    // --------------------------------------------------------------------
+    //drawMatchUI(): this draws both the “playing” and “spectating” views of a match
+    //It shows player names, scores, the round timer, last round info, and chat
     function drawMatchUI() {
-      // Safety check: if for some reason currentMatch vanished, go back to lobby.
       if (!currentMatch) {
         uiMode = 'lobby';
         return;
@@ -774,7 +744,7 @@
       const isPlayerB = myId && pB && pB.id === myId;
       const isParticipant = isPlayerA || isPlayerB;
 
-      // Whether we are spectating is simply “not one of the players”.
+      //Makes sure whether we are spectating is simply “not one of the players”
       viewingMatchAsSpectator = !isParticipant;
 
       const scoreA = currentMatch.scores[pA?.id] || 0;
@@ -786,10 +756,10 @@
       textAlign(CENTER, TOP);
       textSize(24);
       fill(240);
-      // Use the last part of the match id to show a short match number.
+      //Use the last part of the match id to show a short match number
       text(`MATCH #${currentMatch.matchId.slice(-6)}`, gameX + gameWidth / 2, topOffset);
 
-      // --- Spectator-only Back to Lobby button ---
+      //Spectator-only Back to Lobby button
       spectateBackButton = null;
       if (viewingMatchAsSpectator) {
         const bX = 20;
@@ -811,7 +781,7 @@
         text("← Back to Lobby", bX + bW / 2, bY + bH / 2);
       }
 
-      // --- Player names + scores at top left/right ---
+      //Player names and scores at top
       textSize(16);
       textAlign(CENTER, TOP);
       fill(200);
@@ -836,44 +806,42 @@
         text("(You)", gameX + gameWidth * 0.75, topOffset + 60);
       }
 
-      // --- Round label centered near top ---
+      //Round labels centered near top
       textAlign(CENTER, TOP);
       textSize(18);
       fill(220);
       const roundLabel = currentMatch.round != null ? currentMatch.round : 1;
       text(`Round ${roundLabel}`, gameX + gameWidth / 2, topOffset + 90);
 
-      // Draw the shared timer bar that counts down each round.
+      //Draws the shared timer bar that counts down each round
       drawTurnTimerBar(gameX, gameWidth);
 
-      // If we are a participant and in match mode, show the R/P/S buttons for interaction.
+      //If we are a participant and in match mode, show the R/P/S buttons for interaction
       if (isParticipant && uiMode === 'match') {
         drawRPSButtons(gameX, gameWidth);
       } else {
         rpsButtons = [];
       }
 
-      // In the middle, show “Last Round” info including revealed moves.
+      //In the middle, shows “Last Round” info including revealed moves
       drawRoundResultPanel(gameX, gameWidth);
 
-      // On the left, show the chat panel for players and spectators to talk.
+      //On the left, shows the chat panel for players and spectators to talk
       drawChatPanel(isParticipant);
     }
 
-    // --------------------------------------------------------------------
-    // drawTurnTimerBar(): draws a progress bar based on remaining time.
-    // This is a purely visual reflection of server timers, not the authority.
-    // --------------------------------------------------------------------
+    //drawTurnTimerBar(): draws a progress bar based on remaining time. This is a purely visual reflection of server
+    //timers, not the authority.
     function drawTurnTimerBar(gameX, gameWidth) {
       const barWidth = gameWidth * 0.8;
       const barHeight = 16;
       const x = gameX + (gameWidth - barWidth) / 2;
-      const y = 170; // placed a bit lower so it doesn’t collide with text above
+      const y = 170; //originally this was overlapping some text, so I placed a bit lower so it doesn’t collide with text above
 
       const now = Date.now();
       const remaining = Math.max(0, turnInfo.expiresAt - now);
 
-      // durationMs is how long a full bar represents. We default to ROUND_TIME_MS.
+      //durationMs is how long a full bar represents. We default to ROUND_TIME_MS.
       const totalMs = turnInfo.durationMs || ROUND_TIME_MS;
       const progress = totalMs > 0 ? constrain(remaining / totalMs, 0, 1) : 0;
 
@@ -897,12 +865,10 @@
       );
     }
 
-    // --------------------------------------------------------------------
-    // drawRPSButtons(): draws the Rock, Paper, and Scissors buttons + icons.
-    // Players click these to submit their moves to the server.
-    // --------------------------------------------------------------------
+    //drawRPSButtons(): this function draws the Rock, Paper, and Scissors buttons and icons that players click to submit
+    //their moves to the server.
     function drawRPSButtons(gameX, gameWidth) {
-      const baseY = height - 160;    // vertical position of the buttons
+      const baseY = height - 160;
       const totalWidth = gameWidth * 0.8;
       const buttonWidth = totalWidth / 3 - 16;
       const buttonHeight = 80;
@@ -917,7 +883,7 @@
         const x = startX + i * (buttonWidth + 16);
         const y = baseY;
 
-        // Store each button’s position and which move it represents for hit detection.
+        //Stores each button’s position and which move it represents for hit detection
         rpsButtons.push({ x, y, w: buttonWidth, h: buttonHeight, move: moves[i] });
 
         const hover =
@@ -933,7 +899,7 @@
         else if (moves[i] === 'paper') img = imgPaper;
         else if (moves[i] === 'scissors') img = imgScissors;
 
-        // Draw the appropriate move icon centered inside the button.
+        //Draws the appropriate move icon centered inside the button 
         if (img) {
           const iconSize = min(buttonWidth - 10, buttonHeight - 10);
           image(
@@ -945,14 +911,14 @@
           );
         }
 
-        // Label each button above the icon so players clearly know which is which.
+        //Labels each button above the icon so players clearly know which is which
         textAlign(CENTER, BOTTOM);
         textSize(14);
         fill(230);
         text(labels[i], x + buttonWidth / 2, y - 4);
       }
 
-      // A short sentence above the buttons reminding players of the timer constraint.
+      //A short sentence above the buttons reminding players of the timer constraints
       textAlign(CENTER, TOP);
       textSize(14);
       fill(190);
@@ -963,10 +929,8 @@
       );
     }
 
-    // --------------------------------------------------------------------
-    // drawRoundResultPanel(): displays outcome + reason + icons for last round.
-    // This is where hidden information gets revealed simultaneously.
-    // --------------------------------------------------------------------
+    //drawRoundResultPanel(): displays outcome and reason and icons for last round. This is where hidden information gets revealed
+    //simultaneously
     function drawRoundResultPanel(gameX, gameWidth) {
       const panelWidth = gameWidth * 0.8;
       const panelHeight = 140;
@@ -984,7 +948,7 @@
 
       textSize(13);
       if (!lastRoundResult) {
-        // Before any rounds have been played, use this space to explain the secrecy mechanic.
+        //Before any rounds have been played, use this space to explain the secrecy mechanic
         fill(180);
         text(
           "No rounds resolved yet. Your move will be revealed once both players choose.",
@@ -1013,7 +977,7 @@
       text(`Outcome: ${outcome}`, x + 16, y + 40);
       text(`Reason: ${reasonText}`, x + 16, y + 60);
 
-      // Now show the revealed moves as images with player names under them.
+      //Now, show the revealed moves as images with player names under them
       if (revealedMoves && currentMatch && currentMatch.players) {
         const [pA, pB] = currentMatch.players;
         const moveA = pA ? revealedMoves[pA.id] : null;
@@ -1024,7 +988,7 @@
         const leftCenterX = x + panelWidth * 0.25;
         const rightCenterX = x + panelWidth * 0.75;
 
-        // Utility to pick which image to show for each move.
+        //Utility to pick which image to show for each move
         function imgForMove(m) {
           if (m === 'rock') return imgRock;
           if (m === 'paper') return imgPaper;
@@ -1065,10 +1029,8 @@
       }
     }
 
-    // --------------------------------------------------------------------
-    // drawChatPanel(): renders the chat area for battle commentary.
-    // Players and spectators share this space to trash-talk or cheer.
-    // --------------------------------------------------------------------
+    //drawChatPanel(): this function renders the chat area for battle commentary. Players and spectators share this spacea
+    //to trash-talk or cheer each other. It is my baby
     function drawChatPanel(isParticipant) {
       const { chatWidth } = getLayout();
       const panelWidth = chatWidth - 20;
@@ -1101,7 +1063,7 @@
       let lineY = textAreaY;
       const lineStep = 14;
 
-      // Compute how many lines of chat fit in the box and only draw that many.
+      //Computes how many lines of chat fit in the box and only draws that many
       const maxLines = floor(textAreaH / lineStep);
       const recent = matchChatMessages.slice(-maxLines);
 
@@ -1114,9 +1076,7 @@
       }
     }
 
-    // --------------------------------------------------------------------
-    // drawSettingsUI(): simple settings screen with a volume slider + back button.
-    // --------------------------------------------------------------------
+    //drawSettingsUI(): this simple function makes the settings screen with a volume slider and back button
     function drawSettingsUI() {
       const padding = 24;
       textAlign(CENTER, TOP);
@@ -1138,7 +1098,6 @@
       fill(230);
       text("Arena Volume", x + 24, y + 24);
 
-      // Slider geometry: horizontal track measuring from 0 to 1 volume.
       const sliderX = x + 24;
       const sliderY = y + 80;
       const sliderW = panelWidth - 48;
@@ -1149,7 +1108,7 @@
       fill(50);
       rect(sliderX, sliderY - sliderH / 2, sliderW, sliderH, 6);
 
-      // Knob position is computed from current volumeLevel.
+      //Knob (the colorful circle) position is computed from current volumeLevel
       const knobX = sliderX + volumeLevel * sliderW;
       const knobRadius = 10;
       fill(140, 200, 255);
@@ -1160,7 +1119,7 @@
       fill(200);
       text(`Volume: ${(volumeLevel * 100).toFixed(0)}%`, x + 24, y + 110);
 
-      // Back to Lobby button at the bottom of the panel.
+      //Back to Lobby button at the bottom of the panel
       const bW = 120;
       const bH = 32;
       const bX = x + panelWidth / 2 - bW / 2;
@@ -1179,9 +1138,7 @@
       text("Back to Lobby", bX + bW / 2, bY + bH / 2);
     }
 
-    // --------------------------------------------------------------------
-    // drawFooterInstructions(): shows a simple, context-based hint at the bottom.
-    // --------------------------------------------------------------------
+    //drawFooterInstructions(): the function shows a simple, context-based hint at the bottom
     function drawFooterInstructions() {
       const footerY = height - 28;
       noStroke();
@@ -1218,20 +1175,19 @@
       }
     }
 
-    // --------------------------------------------------------------------
-    // startAudioIfNeeded(): unlocks audio context on first user interaction.
-    // Also starts the looping ambient sound if everything is ready.
-    // --------------------------------------------------------------------
+    //startAudioIfNeeded(): this function unlocks audio context on first user interaction. Also starts the looping ambient sound if everything
+    //is ready
     function startAudioIfNeeded() {
       if (!audioStarted) {
         audioStarted = true;
 
-        // p5-specific helper that resumes the audio context if it was suspended.
+        //this is a p5-specific helper that resumes the audio context if it was suspended (which, granted, should basically happen never)
+        //translation: it's insurance
         if (typeof userStartAudio === 'function') {
           userStartAudio();
         }
 
-        // If our ambient track is available and not already playing, start looping it.
+        //If my ambient track is available and not already playing, starts looping it indefinitely
         if (
           sfxAmbient &&
           typeof sfxAmbient.isLoaded === 'function' &&
@@ -1246,19 +1202,17 @@
       }
     }
 
-    // --------------------------------------------------------------------
-    // Mouse input handlers: direct clicks to the right handlers based on uiMode.
-    // --------------------------------------------------------------------
+    // Mouse input handlers: this function directs clicks to the right handlers based on uiMode
     function mousePressed() {
-      // Any mouse press can serve as our “user gesture” to unlock audio.
+      //Any mouse press can serve as our 'user gesture' to unlock audio
       startAudioIfNeeded();
 
       if (uiMode === 'match') {
-        // Only match participants should interact with R/P/S buttons.
+        //Only match participants should interact with R/P/S buttons, no one else can touch them!
         if (!viewingMatchAsSpectator) {
           handleRPSClick();
         }
-        // Both players and spectators can click the “Back to Lobby” button.
+        //Both players and spectators can click the “Back to Lobby” button, or forfeit and press 'L'
         handleMatchCommonClick();
       } else if (uiMode === 'spectate') {
         handleMatchCommonClick();
@@ -1269,7 +1223,7 @@
       }
     }
 
-    // While dragging, if we are in the settings UI and grabbed the slider, update the volume.
+    //While dragging, if we are in the settings UI and grabbed the slider, updates the volume
     function mouseDragged() {
       if (uiMode === 'settings' && volumeDragging && volumeSlider) {
         const s = volumeSlider;
@@ -1278,26 +1232,24 @@
       }
     }
 
-    // On mouse release, stop dragging the volume slider.
+    //On mouse release, stop dragging the volume slider (because that would be helpful too, knowing when to stop)
     function mouseReleased() {
       volumeDragging = false;
     }
 
-    // --------------------------------------------------------------------
-    // handleRPSClick(): checks if we clicked one of the R/P/S boxes and sends move to server.
-    // --------------------------------------------------------------------
+    //handleRPSClick(): this function checks if we clicked one of the R/P/S boxes and sends the move to the server
     function handleRPSClick() {
       if (!currentMatch || !socket || !socket.connected) return;
       if (hasSubmittedMoveThisRound) return; // don't spam multiple moves
       if (Date.now() > turnInfo.expiresAt) return; // ignore if timer has visually expired
 
-      // Check every R/P/S button bounding box for a click.
+      //Checks every R/P/S button bounding box for a click
       for (const btn of rpsButtons) {
         if (
           mouseX >= btn.x && mouseX <= btn.x + btn.w &&
           mouseY >= btn.y && mouseY <= btn.y + btn.h
         ) {
-          // Emit a playerMove message with matchId and chosen move string.
+          //Emit a playerMove message with matchId and chosen move strings
           socket.emit('playerMove', {
             matchId: currentMatch.matchId,
             move: btn.move,
@@ -1309,9 +1261,7 @@
       }
     }
 
-    // --------------------------------------------------------------------
-    // handleMatchCommonClick(): for match + spectate modes, handles the “Back to Lobby” button.
-    // --------------------------------------------------------------------
+    //handleMatchCommonClick(): a function for matches and spectate modes, handles the “Back to Lobby” button
     function handleMatchCommonClick() {
       if (viewingMatchAsSpectator && spectateBackButton) {
         const b = spectateBackButton;
@@ -1319,11 +1269,11 @@
           mouseX >= b.x && mouseX <= b.x + b.w &&
           mouseY >= b.y && mouseY <= b.y + b.h
         ) {
-          // Tell the server we’re done spectating.
+          //This tells the server we’re done spectating
           if (socket && socket.connected) {
             socket.emit('leaveSpectate');
           }
-          // Locally reset match-related state and return to lobby.
+          //Locally resets match-related state and return to lobby
           currentMatch = null;
           lastRoundResult = null;
           matchChatMessages = [];
@@ -1333,13 +1283,12 @@
       }
     }
 
-    // --------------------------------------------------------------------
-    // handleLobbyClick(): processes clicks on lobby UI (queue, spectate, settings, match rows).
-    // --------------------------------------------------------------------
+    //handleLobbyClick(): thi function processes clicks on lobby UI (queue, spectate, settings, match rows), which SOUNDS lame but
+    //actually was some of the most confusing code to ever have to google about >:[
     function handleLobbyClick() {
       if (!socket || !socket.connected) return;
 
-      // 1) Queue button clicked -> toggle our queue status.
+      //Queue button clicked -> toggles our queue status
       const q = lobbyButtons.queue;
       if (
         q &&
@@ -1354,7 +1303,7 @@
         return;
       }
 
-      // 2) Random spectate button -> pick a random active match and request to spectate it.
+      //Random spectate button -> picks a random active match and request to spectate it
       const s = lobbyButtons.spectateRandom;
       if (
         s &&
@@ -1372,7 +1321,7 @@
         return;
       }
 
-      // 3) Settings button -> switch to settings UI mode.
+      //Settings button -> switches to settings UI mode
       const set = lobbyButtons.settings;
       if (
         set &&
@@ -1383,7 +1332,7 @@
         return;
       }
 
-      // 4) Click on a specific active match row to spectate that exact match.
+      //Clicks on a specific active match row to spectate that exact match (for fluidity of the game principles)
       for (const row of lobbyButtons.matches) {
         if (
           mouseX >= row.x && mouseX <= row.x + row.w &&
@@ -1395,9 +1344,7 @@
       }
     }
 
-    // --------------------------------------------------------------------
-    // requestSpectateMatch(): small helper to emit a spectate request to the server.
-    // --------------------------------------------------------------------
+    //requestSpectateMatch(): this function acts as a small helper to emit a spectate request to the server
     function requestSpectateMatch(matchId) {
       if (!socket || !socket.connected) return;
       if (!matchId) return;
@@ -1407,12 +1354,10 @@
       });
     }
 
-    // --------------------------------------------------------------------
-    // handleSettingsClick(): processes clicks inside the settings UI.
-    // This includes interacting with the volume slider and the back button.
-    // --------------------------------------------------------------------
+    //handleSettingsClick(): processes clicks inside the settings UI. This includes interacting with the volume slider and the 
+    //back button.
     function handleSettingsClick(fromMousePress = false) {
-      // Check if the click is inside the slider track area.
+      //Checks if the click is inside the slider track area (if not , assumes to do nothing)
       if (volumeSlider) {
         const s = volumeSlider;
         if (
@@ -1427,7 +1372,7 @@
         }
       }
 
-      // Check if the click is within the back button, and if so, return to the lobby.
+      //Checks if the click is within the back button, and if so, returns to the lobby
       if (backFromSettingsButton) {
         const b = backFromSettingsButton;
         if (
@@ -1439,15 +1384,12 @@
       }
     }
 
-    // --------------------------------------------------------------------
-    // keyPressed(): keyboard shortcuts (mainly “L” to forfeit/leave a match).
-    // --------------------------------------------------------------------
+    //keyPressed(): function for all the keyboard shortcuts (mainly “L” to forfeit/leave a match) (possibly the easiest code yet)
     function keyPressed() {
-      // A key press counts as user interaction for unlocking audio.
       startAudioIfNeeded();
       if (!socket || !socket.connected) return;
 
-      // Pressing L triggers a forfeit from match mode.
+      //Pressing L triggers a forfeit from match mode
       if (key === 'l' || key === 'L') {
         if (uiMode === 'match' && currentMatch) {
           socket.emit('leaveMatch', {
@@ -1462,16 +1404,14 @@
       }
     }
 
-    // --------------------------------------------------------------------
-    // sendChatMessage(): reads the chat input, sends it to server, and clears the box.
-    // --------------------------------------------------------------------
+    //sendChatMessage(): this function reads the chat input, sends it to server, and clears the box (I told you to remember it!)
     function sendChatMessage() {
       if (!chatInputEl) return;
       if (!socket || !socket.connected) return;
 
       const text = chatInputEl.value.trim();
-      if (!text) return;        // ignore empty messages
-      if (!currentMatch) return; // only allow chat while in or spectating a match
+      if (!text) return;        //ignores empty messages
+      if (!currentMatch) return; //only allows chat while in or spectating a match
 
       socket.emit('chatMessage', {
         matchId: currentMatch.matchId,
@@ -1482,10 +1422,8 @@
       chatInputEl.value = '';
     }
 
-    // --------------------------------------------------------------------
-    // updateChatInputVisibility(): positions the chat box and toggles its visibility.
-    // We treat the chat as a real HTML input layered over the canvas.
-    // --------------------------------------------------------------------
+    //updateChatInputVisibility(): function which positions the chat box and toggles its visibility
+    //We treat the chat as a real HTML input layered over the canvas (like a website more than a game)
     function updateChatInputVisibility() {
       if (!chatInputEl) return;
 
@@ -1494,13 +1432,13 @@
 
       if (!shouldShow) return;
 
-      // Resize the chat box to fit nicely within the chat column.
+      //Resizes the chat box to fit nicely within the chat column
       const { chatWidth } = getLayout();
       const inputWidth = Math.max(chatWidth - 40, 120);
       chatInputEl.style.left = '10px';
       chatInputEl.style.width = inputWidth + 'px';
 
-      // Everyone in a match room (players or spectators) can type.
+      //Everyone in a match room (players or spectators) can type in the chat
       chatInputEl.disabled = false;
 
       const isParticipant =
@@ -1509,25 +1447,23 @@
         currentMatch.players &&
         currentMatch.players.some(p => p.id === socket.id);
 
-      // Adjust placeholder text depending on whether we are playing or spectating.
+      //Adjusts placeholder text depending on whether we are playing or spectating
       chatInputEl.placeholder = isParticipant
         ? "Type message to your opponent and spectators, then press Enter..."
         : "Spectator: type message and press Enter...";
     }
 
-    // --------------------------------------------------------------------
-    // setVolumeLevel(): updates the master volume and each individual sound.
-    // This is called from the settings UI and also once on startup.
-    // --------------------------------------------------------------------
+    //setVolumeLevel(): the function which updates the master volume and each individual sound. This is called from the settings
+    //UI and also once on startup.
     function setVolumeLevel(t) {
       volumeLevel = constrain(t, 0, 1);
 
-      // p5’s global volume control (affects all sounds).
+      //p5’s global volume control
       if (typeof masterVolume === 'function') {
         masterVolume(volumeLevel);
       }
 
-      // Update individual sound effect volumes (if they exist).
+      //Updates individual sound effect volumes (when they exist)
       const sfxArray = [sfxWin, sfxLose, sfxTie, sfxMatchStart];
       sfxArray.forEach(s => {
         if (s && typeof s.setVolume === 'function') {
@@ -1535,7 +1471,7 @@
         }
       });
 
-      // Ambient crowd noise is slightly quieter relative to the global volume.
+      //Makes ambient crowd noise is slightly quieter relative to the global volume
       if (sfxAmbient && typeof sfxAmbient.setVolume === 'function') {
         sfxAmbient.setVolume(0.35 * volumeLevel);
       }
